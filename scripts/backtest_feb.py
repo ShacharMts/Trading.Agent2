@@ -128,7 +128,15 @@ def predict_as_of(
 
     X = latest_df[feature_columns].values
     X_scaled = scaler.transform(X)
-    proba = model.predict_proba(X_scaled)[:, 1]
+
+    # Ensemble prediction: average probabilities from all models
+    if isinstance(model, dict):
+        probas = []
+        for name, m in model.items():
+            probas.append(m.predict_proba(X_scaled)[:, 1])
+        proba = np.mean(probas, axis=0)
+    else:
+        proba = model.predict_proba(X_scaled)[:, 1]
     latest_df["buy_probability"] = proba
 
     # Feasibility-adjusted scoring

@@ -248,32 +248,38 @@ def train_and_evaluate(
         print(f"  Backtest avg ROI: {evaluation['backtest']['avg_return_pct']:.2f}%")
         print(f"  Backtest Sharpe:  {evaluation['backtest']['sharpe_ratio']:.3f}")
 
-    # Select best model by walk-forward average AUC (more robust than single-split AUC)
-    results.sort(key=lambda r: r["walk_forward"]["wf_avg_auc"], reverse=True)
+    # Select best model by walk-forward Sharpe (practical profitability, not just AUC)
+    results.sort(key=lambda r: r["walk_forward"]["wf_avg_sharpe"], reverse=True)
     best = results[0]
     best_name = best["model_name"]
     print(f"\n{'='*60}")
-    print(f"BEST MODEL: {best_name} (WF Avg AUC = {best['walk_forward']['wf_avg_auc']:.4f})")
+    print(f"BEST MODEL: {best_name} (WF Avg Sharpe = {best['walk_forward']['wf_avg_sharpe']:.3f})")
     print(f"{'='*60}")
 
-    # Retrain best on full data (train + test) for production
-    print(f"\nRetraining {best_name} on full dataset for production...")
-    best_model = get_candidate_models()[best_name]
+    # Train ALL models on full data for ensemble
+    print(f"\nTraining ensemble (all 3 models) on full dataset for production...")
     X_full = scaler.fit_transform(clean_df[feature_cols].values)
     y_full = clean_df["target_buy"].values.astype(int)
-    best_model.fit(X_full, y_full)
 
-    # Save artifacts
+    ensemble_models = {}
+    for name in get_candidate_models():
+        m = get_candidate_models()[name]
+        m.fit(X_full, y_full)
+        ensemble_models[name] = m
+
+    # Save artifacts — save ensemble dict instead of single model
     MODELS_DIR.mkdir(exist_ok=True)
-    joblib.dump(best_model, BEST_MODEL_PATH)
+    joblib.dump(ensemble_models, BEST_MODEL_PATH)
     joblib.dump(scaler, SCALER_PATH)
 
     with open(FEATURE_COLUMNS_PATH, "w") as f:
         json.dump(feature_cols, f, indent=2)
 
     metadata = {
-        "model_type": best_name,
-        "model_version": f"{best_name}_v2_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
+        "model_type": "ensemble",
+        "ensemble_models": list(ensemble_models.keys()),
+        "best_single_model": best_name,
+        "model_version": f"ensemble_v3_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "period_days": period_days,
         "profit_threshold": profit_threshold,
@@ -286,7 +292,7 @@ def train_and_evaluate(
     with open(MODEL_METADATA_PATH, "w") as f:
         json.dump(metadata, f, indent=2, default=str)
 
-    print(f"\nSaved model to {BEST_MODEL_PATH}")
+    print(f"\nSaved ensemble to {BEST_MODEL_PATH}")
     print(f"Saved metadata to {MODEL_METADATA_PATH}")
 
     return metadata

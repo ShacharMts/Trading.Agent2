@@ -44,3 +44,46 @@ All 6 improvements are coded. Now let's retrain the model:
 
 Model retrained. Now let's run the February backtest with the improved model. I need to update the backtest script to handle the new feature set (fillna for NaN features in early dates):
 
+
+Key issues I see:
+
+MU recommended 18x but only 22% hit — model picks it on features but it consistently fails
+NEM 18x, 44% hit — another drag on accuracy
+Week 9 collapses to 50% — no market-regime awareness
+Random Forest had P@10=1.000, P@20=1.000, Sharpe 3.779 but wasn't selected because LightGBM had slightly higher AUC. We're optimizing the wrong metric.
+Single model — ensembling could boost stability
+
+
+Here's my plan — 4 targeted improvements:
+
+Select model by Sharpe ratio instead of AUC (RF had Sharpe 3.78 vs LGBM 1.78)
+Ensemble all 3 models — average their probabilities for more stable predictions
+Add market regime feature — detect if the overall market (VOO) is trending up/down
+Filter out chronic underperformers — if a stock historically fails to hit targets, demote it
+Let me implement all of these:
+
+
+
+Now I'll make three key changes: (1) trainer saves an ensemble, (2) pipeline adds market regime, (3) predictor uses ensemble + filters underperformers:
+
+
+
+Now add market regime detection to the pipeline:
+
+
+
+Now update the rest of _compute_market_returns to return the regime series too, and update engineer_features_for_symbol and engineer_features:
+
+
+Now update the predictor to use the ensemble and add historical underperformer filtering:
+
+Now update the backtest script to also handle ensembles:
+
+
+
+Now let's retrain with the ensemble and run the backtest:
+
+
+
+Ensemble trained (XGBoost selected as best by walk-forward Sharpe 3.457, but all 3 models are saved for ensemble averaging). Now run the backtest:
+

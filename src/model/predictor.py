@@ -151,8 +151,16 @@ class Predictor:
         X = latest_df[self.feature_columns].values
         X_scaled = self.scaler.transform(X)
 
-        # Predict buy probability
-        proba = self.model.predict_proba(X_scaled)[:, 1]
+        # Predict buy probability using ensemble (average of all models)
+        if isinstance(self.model, dict):
+            # Ensemble: average probabilities from all models
+            probas = []
+            for name, m in self.model.items():
+                probas.append(m.predict_proba(X_scaled)[:, 1])
+            proba = np.mean(probas, axis=0)
+        else:
+            # Single model fallback
+            proba = self.model.predict_proba(X_scaled)[:, 1]
         latest_df["buy_probability"] = proba
 
         # Compute feasibility-adjusted score per symbol

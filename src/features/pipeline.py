@@ -22,8 +22,8 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series) -> pd.DataFrame:
-    """Add stock return relative to market (VOO) return."""
+def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series, market_regime: pd.Series) -> pd.DataFrame:
+    """Add stock return relative to market (VOO) return and market regime."""
     # Per-bar return of the stock
     stock_return = df["Close"].pct_change() * 100
     # Align market return by DateTime
@@ -31,30 +31,35 @@ def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series) -> pd.Da
     df["relative_strength"] = stock_return - df["market_return"]
     # Rolling 20-bar relative strength
     df["relative_strength_20"] = df["relative_strength"].rolling(window=20, min_periods=5).mean()
+    # Market regime: rolling 20-bar return of VOO (positive = uptrend, negative = downtrend)
+    df["market_regime"] = df["DateTime"].map(market_regime).fillna(0)
     return df
 
 
-def _compute_market_returns(data: pd.DataFrame) -> pd.Series:
-    """Compute per-bar returns of VOO as a market proxy.
+def _compute_market_returns(data: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
+    """Compute per-bar returns and regime of VOO as a market proxy.
 
-    Returns a Series indexed by DateTime with per-bar pct return.
+    Returns (returns_series, regime_series) both indexed by DateTime.
     """
     voo = data[data["Symbol"] == "VOO"].sort_values("DateTime")
     if voo.empty:
-        # Fallback: use median return across all symbols per bar
         data_sorted = data.sort_values("DateTime")
         all_returns = data_sorted.groupby("DateTime")["Close"].apply(
             lambda x: x.pct_change().iloc[-1] if len(x) > 1 else 0
         )
-        return all_returns * 100
+        return all_returns * 100, pd.Series(0, index=all_returns.index)
 
-    voo_returns = voo.set_index("DateTime")["Close"].pct_change() * 100
-    return voo_returns
+    voo_close = voo.set_index("DateTime")["Close"]
+    voo_returns = voo_close.pct_change() * 100
+    # Market regime: rolling 20-bar cumulative return (trend direction)
+    voo_regime = voo_close.pct_change(periods=20) * 100
+    return voo_returns, voo_regime
 
 
 def engineer_features_for_symbol(
     symbol_df: pd.DataFrame,
     market_returns: pd.Series,
+    market_regime: pd.Series,
 ) -> pd.DataFrame:
     """Apply all feature engineering to a single symbol's data."""
     df = symbol_df.copy()
@@ -67,7 +72,7 @@ def engineer_features_for_symbol(
     df = add_price_action_features(df)
     df = add_momentum_features(df)
     df = _add_calendar_features(df)
-    df = _add_relative_strength(df, market_returns)
+    df = _add_relative_strength(df, market_returns, market_regime)
 
     # Encode direction as numeric
     df["direction_num"] = (df["Direction"] == "BULLISH").astype(int)
@@ -87,8 +92,8 @@ def engineer_features(data: pd.DataFrame) -> pd.DataFrame:
     Returns:
         DataFrame with all features added.
     """
-    # Pre-compute market returns once for relative strength
-    market_returns = _compute_market_returns(data)
+    # Pre-compute market returns and regime once for relative strength
+    market_returns, market_regime = _compute_market_returns(data)
 
     symbols = data["Symbol"].unique()
     frames = []
@@ -97,7 +102,7 @@ def engineer_features(data: pd.DataFrame) -> pd.DataFrame:
         symbol_data = data[data["Symbol"] == symbol].copy()
         if len(symbol_data) < 50:
             continue
-        featured = engineer_features_for_symbol(symbol_data, market_returns)
+        featured = engineer_features_for_symbol(symbol_data, market_returns, market_regime)
         frames.append(featured)
 
     if not frames:

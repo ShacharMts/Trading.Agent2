@@ -39,6 +39,7 @@
   "week_of_month",
   "relative_strength",
   "relative_strength_20",
+  "market_regime",
   "direction_num",
   "category_num"
 ]
