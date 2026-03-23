@@ -145,7 +145,12 @@ def predict_as_of(
         proba = model.predict_proba(X_scaled)[:, 1]
     latest_df["buy_probability"] = proba
 
-    # Feasibility-adjusted scoring with overextension penalty
+    # v6: Compute feasibility-adjusted score with recalibrated weights
+    # Get market regime for regime gate
+    market_regime_val = 0.0
+    if "market_regime" in latest_df.columns:
+        market_regime_val = latest_df["market_regime"].median()
+
     feasibility_scores = []
     for _, row in latest_df.iterrows():
         symbol = row["Symbol"]
@@ -153,6 +158,13 @@ def predict_as_of(
         model_conf = proba[row.name]
         hist_pct = vol_data.get("pct_achieving", 0.0)
         avg_gain = vol_data.get("avg_max_gain", 0.0)
+
+        # v6 Priority 1: Min feasibility threshold — reject chronic losers
+        # Scale threshold with target: 30% for 3% target, down to 15% for 10%+
+        min_feasibility = max(15.0, 35.0 - expected_profit_pct * 2.0)
+        if hist_pct < min_feasibility:
+            feasibility_scores.append(0.0)
+            continue
 
         if expected_profit_pct > 0:
             gain_ratio = min(avg_gain / expected_profit_pct, 2.0)
@@ -173,11 +185,38 @@ def predict_as_of(
         else:
             decel_penalty = 1.0
 
+        # v6 Priority 3: Mean-reversion bonus/penalty
+        sma_20 = row.get("sma_20", None)
+        close = row["Close"]
+        mean_rev_factor = 1.0
+        if sma_20 is not None and pd.notna(sma_20) and sma_20 > 0:
+            if close < sma_20 and pd.notna(momentum_decel) and momentum_decel > 0:
+                mean_rev_factor = 1.15
+            elif close > sma_20 * 1.05:
+                mean_rev_factor = 0.85
+
+        # v6 Priority 4: Expected profit cap
+        est_ret = avg_gain * model_conf
+        max_reasonable = expected_profit_pct * 2.5
+        if est_ret > max_reasonable:
+            profit_cap_penalty = max(0.6, 1.0 - (est_ret - max_reasonable) / 30.0)
+        else:
+            profit_cap_penalty = 1.0
+
+        # v6 Priority 6: Market regime gate
+        regime_penalty = 1.0
+        if market_regime_val < -0.02:
+            if model_conf < 0.6:
+                regime_penalty = 0.7
+            elif model_conf < 0.7:
+                regime_penalty = 0.85
+
+        # v6 Priority 2: Recalibrated weights — 25/40/35
         combined = (
-            0.40 * model_conf
-            + 0.30 * (hist_pct / 100.0)
-            + 0.30 * min(gain_ratio, 1.0)
-        ) * overext_penalty * decel_penalty
+            0.25 * model_conf
+            + 0.40 * (hist_pct / 100.0)
+            + 0.35 * min(gain_ratio, 1.0)
+        ) * overext_penalty * decel_penalty * mean_rev_factor * profit_cap_penalty * regime_penalty
         feasibility_scores.append(combined)
 
     latest_df["combined_score"] = feasibility_scores
@@ -203,19 +242,23 @@ def predict_as_of(
     else:
         latest_df["est_stop_loss"] = latest_df["Close"] * 0.97
 
-    # Diverse selection: sort by score, apply category hard cap (max 3 per category)
+    # v6 Priority 5: Diverse selection with stronger penalties
     latest_df = latest_df.sort_values("combined_score", ascending=False).reset_index(drop=True)
     selected_indices = []
     category_counts = {}
-    max_per_category = 3
     for idx, row in latest_df.iterrows():
         if len(selected_indices) >= num_stocks:
             break
         cat = row.get("category", "unknown")
         count = category_counts.get(cat, 0)
+        # Category hard caps: tighter for merchandise/etfs
+        if cat in ("merchandise", "etfs"):
+            max_per_category = 2
+        else:
+            max_per_category = 3
         if count >= max_per_category:
             continue
-        penalty = 0.80 ** count
+        penalty = 0.70 ** count
         adj_score = row["combined_score"] * penalty
         if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.6:
             selected_indices.append(idx)
@@ -391,9 +434,9 @@ def run_backtest():
         {"profit": 10, "period": 10, "num_stocks": 10},
     ]
 
-    # Run all 4 scenarios × days = tasks, 20 at a time (5 days per scenario)
+    # Run all 4 scenarios × days = tasks, all in parallel
     total_tasks = len(scenarios) * len(feb_days)
-    max_workers = len(scenarios) * 5  # 4 scenarios × 5 days = 20 threads
+    max_workers = total_tasks  # 76 threads — one per task for max parallelism
     print(f"\n{'='*60}")
     print(f"Running {total_tasks} tasks with {max_workers} parallel workers")
     print(f"Scenarios: {', '.join(f'{s['profit']}%/{s['period']}d' for s in scenarios)}")

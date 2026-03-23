@@ -163,8 +163,12 @@ class Predictor:
             proba = self.model.predict_proba(X_scaled)[:, 1]
         latest_df["buy_probability"] = proba
 
-        # Compute feasibility-adjusted score per symbol
-        # Combines: model confidence + historical feasibility of this profit in this period
+        # v6: Compute feasibility-adjusted score with recalibrated weights
+        # Get market regime for regime gate
+        market_regime_val = 0.0
+        if "market_regime" in latest_df.columns:
+            market_regime_val = latest_df["market_regime"].median()
+
         feasibility_scores = []
         for _, row in latest_df.iterrows():
             symbol = row["Symbol"]
@@ -176,6 +180,13 @@ class Predictor:
             # What's the avg max gain in the window?
             avg_gain = vol_data.get("avg_max_gain", 0.0)
 
+            # v6 Priority 1: Min feasibility threshold — reject chronic losers
+            # Scale threshold with target: 30% for 3% target, down to 15% for 10%+
+            min_feasibility = max(15.0, 35.0 - expected_profit_pct * 2.0)
+            if hist_pct < min_feasibility:
+                feasibility_scores.append(0.0)
+                continue
+
             # Feasibility: how close is avg_max_gain to the requested profit?
             if expected_profit_pct > 0:
                 gain_ratio = min(avg_gain / expected_profit_pct, 2.0)  # cap at 2x
@@ -185,7 +196,6 @@ class Predictor:
             # Overextension penalty: if stock already ran up big in last 5d, penalize
             returns_5d = row.get("returns_5d", 0.0)
             if pd.notna(returns_5d) and returns_5d > expected_profit_pct:
-                # Already moved more than the target — likely overextended
                 overext_penalty = max(0.5, 1.0 - (returns_5d - expected_profit_pct) / 20.0)
             else:
                 overext_penalty = 1.0
@@ -193,17 +203,45 @@ class Predictor:
             # Momentum deceleration penalty
             momentum_decel = row.get("momentum_decel", 0.0)
             if pd.notna(momentum_decel) and momentum_decel < -3.0:
-                # Momentum decelerating hard — reduce confidence
                 decel_penalty = max(0.7, 1.0 + momentum_decel / 30.0)
             else:
                 decel_penalty = 1.0
 
-            # Combined score: 40% model + 30% historical + 30% feasibility, with penalties
+            # v6 Priority 3: Mean-reversion bonus/penalty
+            sma_20 = row.get("sma_20", None)
+            close = row["Close"]
+            mean_rev_factor = 1.0
+            if sma_20 is not None and pd.notna(sma_20) and sma_20 > 0:
+                if close < sma_20 and pd.notna(momentum_decel) and momentum_decel > 0:
+                    # Below SMA-20 with accelerating momentum → mean-reversion bonus
+                    mean_rev_factor = 1.15
+                elif close > sma_20 * 1.05:
+                    # >5% above SMA-20 → overextended penalty
+                    mean_rev_factor = 0.85
+
+            # v6 Priority 4: Expected profit cap — penalize unrealistic expectations
+            est_ret = avg_gain * model_conf
+            max_reasonable = expected_profit_pct * 2.5
+            if est_ret > max_reasonable:
+                profit_cap_penalty = max(0.6, 1.0 - (est_ret - max_reasonable) / 30.0)
+            else:
+                profit_cap_penalty = 1.0
+
+            # v6 Priority 6: Market regime gate
+            regime_penalty = 1.0
+            if market_regime_val < -0.02:
+                # Bearish regime: require higher model confidence
+                if model_conf < 0.6:
+                    regime_penalty = 0.7
+                elif model_conf < 0.7:
+                    regime_penalty = 0.85
+
+            # v6 Priority 2: Recalibrated weights — 25/40/35
             combined = (
-                0.40 * model_conf
-                + 0.30 * (hist_pct / 100.0)
-                + 0.30 * min(gain_ratio, 1.0)
-            ) * overext_penalty * decel_penalty
+                0.25 * model_conf
+                + 0.40 * (hist_pct / 100.0)
+                + 0.35 * min(gain_ratio, 1.0)
+            ) * overext_penalty * decel_penalty * mean_rev_factor * profit_cap_penalty * regime_penalty
             feasibility_scores.append(combined)
 
         latest_df["combined_score"] = feasibility_scores
@@ -236,25 +274,31 @@ class Predictor:
         # Sort by combined_score descending, take top-N with diversity penalty
         latest_df = latest_df.sort_values("combined_score", ascending=False).reset_index(drop=True)
 
-        # Greedy diverse selection: penalize repeats from same category
-        # Hard cap: max 3 picks per category to avoid concentration
+        # v6 Priority 5: Greedy diverse selection with stronger penalties
+        # Hard cap: max 3 for snp100/snp500, max 2 for merchandise/etfs
         selected_indices = []
         category_counts = {}
-        max_per_category = 3
+        symbol_counts = {}
         for idx, row in latest_df.iterrows():
             if len(selected_indices) >= num_stocks:
                 break
             cat = row.get("category", "unknown")
+            symbol = row["Symbol"]
             count = category_counts.get(cat, 0)
+            # Category hard caps: tighter for merchandise/etfs
+            if cat in ("merchandise", "etfs"):
+                max_per_category = 2
+            else:
+                max_per_category = 3
             if count >= max_per_category:
-                continue  # hard cap reached for this category
-            # Apply diminishing score for over-represented categories
-            penalty = 0.80 ** count  # each repeat from same category gets 20% discount
+                continue
+            # v6: Stronger diversity penalty (0.70^count instead of 0.80)
+            penalty = 0.70 ** count
             adj_score = row["combined_score"] * penalty
-            # Accept if adjusted score is still competitive
             if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.6:
                 selected_indices.append(idx)
                 category_counts[cat] = count + 1
+                symbol_counts[symbol] = symbol_counts.get(symbol, 0) + 1
 
         # If diversity filtering was too strict, fill remaining slots
         if len(selected_indices) < num_stocks:

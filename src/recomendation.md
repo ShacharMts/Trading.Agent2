@@ -1,146 +1,149 @@
-how can we impruve the model ?
+# v6 Improvement Plan
 
-Analysis Findings
-What's working:
+**Based on:** v5 February 2026 backtest analysis (760 recommendations across 4 scenarios)
 
-Score calibration is decent: Score 90-100 → 89% hit rate, 80-90 → 69%, 70-80 → 53-56%
-"Under SMA-20" picks outperform: 78% hit rate, +6.75% avg vs "Above" at 64%, +2.68%
-Weeks 6-8 strong (74-80%), Week 9 collapsed to 50% (market downturn)
-Key problems identified:
+---
 
-Problem	Evidence
-20 candlestick patterns are useless	18/20 have zero importance. Dead weight
-Low symbol diversity	Only 12-26 unique symbols across 190 recs. Same stocks picked repeatedly
-Score-PnL correlation is weak	Only 0.20-0.27 — model barely predicts magnitude
-No momentum/trend features	Missing MACD, Bollinger Bands, multi-day returns, day-of-week
-MU always recommended, rarely hits	16x recommended, only 25% hit rate
-SMA crossovers unused	Importance = 0 for both crossover features
-Recommended Improvements
-Drop dead features — remove 18 zero-importance candlestick patterns and both crossover signals
-Add momentum features — MACD, Bollinger Bands, multi-timeframe returns (3d, 5d), Stochastic oscillator
-Add calendar features — day-of-week, week-of-month (Week 9 collapse pattern)
-Add relative strength — stock return vs SPY/VOO return (sector-relative momentum)
-Improve diversity in scoring — penalize symbols that are over-concentrated in recommendations
-Use walk-forward training — retrain the model on a rolling window instead of training on all data up-front, prevents lookahead bias
+## Current Performance (v5 Baseline)
 
+| Scenario | Hit Rate | Stopped Out | Avg 10d P&L |
+|----------|----------|-------------|-------------|
+| 3%/10d | 71.6% | 10.5% | +3.86% |
+| 5%/10d | 66.8% | 13.7% | +2.95% |
+| 8%/10d | 61.1% | 17.4% | +2.32% |
+| 10%/10d | 62.1% | 18.4% | +2.52% |
 
+---
 
-1. Strip candlestick.py down to only the 2 patterns that had non-zero importance (three_white_soldiers, three_black_crows), plus add a composite candlestick score.
+## Key Findings
 
-2. Add momentum features to a new file.
+### 1. Toxic Symbols — The Model Loves Losers
 
-3. Update moving_average.py to remove dead crossover signals.
+The most critical problem: the model keeps recommending symbols that **never or rarely hit target**, even giving them high scores:
 
-4. Add calendar and relative strength features to pipeline.
+| Symbol | Total Recs | Hit Rate | Avg Score | Problem |
+|--------|-----------|----------|-----------|---------|
+| **INTC** | 56 | **0%** | 79 | 0 hits out of 56 recommendations |
+| **MU** | 57 | **26%** | 84 | Gets highest scores (89-92) but only 26% hit rate |
+| **KLAC** | 11 | **18%** | 87 | High scores, very low hit rate |
+| **CAT** | 24 | **33%** | — | Stopped out 13x across scenarios |
+| **LRCX** | 44 | **43%** | 88 | Score 87-89 but only 43% success |
+| **NEM** | 36 | **39%** | 86 | Stopped out 15x, high scores (86-88) |
 
-Now let me add a diversity penalty to the predictor scoring. I need to read the current scoring section:
+Meanwhile near-perfect: USO (100%), XLE (100%), XAR (89%), MRNA (90%), IBIT (92%).
 
-Now I'll add a diversity penalty — after computing scores, but before selecting top-N, I'll use a greedy selection that penalizes symbols from the same category:
+**Root cause:** Model overfits on volatility/momentum — volatile semiconductors and miners trigger high momentum signals but are mean-reverting.
 
+### 2. Score Does NOT Predict Success
 
-Now implement walk-forward training in the trainer. Instead of a single 80/20 split, use multiple rolling windows:
+| Score Range | Hit Rate (3%/10d) |
+|------------|-------------------|
+| 80-100 | 68% |
+| 60-79 | 76% |
+| 40-59 | 100% |
 
-All 6 improvements are coded. Now let's retrain the model:
+Higher scores actually perform WORSE. The model's confidence is anti-correlated with success at the top end.
 
-Model retrained. Now let's run the February backtest with the improved model. I need to update the backtest script to handle the new feature set (fillna for NaN features in early dates):
+### 3. Expected Profit is Inversely Correlated with Success
 
+| Outcome | Avg Expected Profit |
+|---------|-------------------|
+| Hit target | 5.0% |
+| Stopped out | 5.6% |
+| Missed | **7.8%** |
 
-Key issues I see:
+Stocks the model expects to gain the most are the most likely to fail.
 
-MU recommended 18x but only 22% hit — model picks it on features but it consistently fails
-NEM 18x, 44% hit — another drag on accuracy
-Week 9 collapses to 50% — no market-regime awareness
-Random Forest had P@10=1.000, P@20=1.000, Sharpe 3.779 but wasn't selected because LightGBM had slightly higher AUC. We're optimizing the wrong metric.
-Single model — ensembling could boost stability
+### 4. Below-SMA-20 Outperforms Above
 
+| Position vs SMA-20 | Hit Rate (3%/10d) |
+|--------------------|-------------------|
+| **Below SMA-20** | **77%** |
+| Above SMA-20 | 65% |
 
-Here's my plan — 4 targeted improvements:
+12pp advantage for mean-reversion setups.
 
-Select model by Sharpe ratio instead of AUC (RF had Sharpe 3.78 vs LGBM 1.78)
-Ensemble all 3 models — average their probabilities for more stable predictions
-Add market regime feature — detect if the overall market (VOO) is trending up/down
-Filter out chronic underperformers — if a stock historically fails to hit targets, demote it
-Let me implement all of these:
+### 5. Late-Month Deterioration (Scenario-Dependent)
 
+| Period | 3%/10d | 8%/10d |
+|--------|--------|--------|
+| Week 1 (Feb 2-6) | 70% | 62% |
+| Week 4 (Feb 23-27) | 70% | **44%** |
 
+Higher targets suffer more during corrective regimes (-18pp at 8%/10d).
 
-Now I'll make three key changes: (1) trainer saves an ensemble, (2) pipeline adds market regime, (3) predictor uses ensemble + filters underperformers:
+### 6. Symbol Concentration
 
+| Scenario | Unique Symbols |
+|----------|---------------|
+| 3%/10d | 45 |
+| 5%/10d | 32 |
+| 8%/10d | 26 |
+| 10%/10d | 31 |
 
+---
 
-Now add market regime detection to the pipeline:
+## Improvement Plan
 
+### Priority 1: Symbol Blacklist / Cool-Down (HIGH IMPACT, expected +3-5pp)
 
+- Track each symbol's rolling hit rate over last 10 recommendations
+- If hit rate < 40%, apply 0.3x penalty or block
+- Cool-down: if stopped out in last 5 trading days, skip for 3 days
+- If stopped out ≥ 3 times in last 20 days, block symbol
 
-Now update the rest of _compute_market_returns to return the regime series too, and update engineer_features_for_symbol and engineer_features:
+### Priority 2: Recalibrate Scoring Weights (HIGH IMPACT, expected +2-4pp)
 
+```
+Current:  0.40 × model + 0.30 × hist_pct + 0.30 × gain_ratio
+Proposed: 0.25 × model + 0.40 × hist_pct + 0.35 × gain_ratio
+```
 
-Now update the predictor to use the ensemble and add historical underperformer filtering:
+Add minimum feasibility threshold: reject if hist_pct < 30%.
 
-Now update the backtest script to also handle ensembles:
+### Priority 3: Mean-Reversion Bonus (MEDIUM-HIGH, expected +2-3pp)
 
+- Bonus 1.15x for stocks below SMA-20 with accelerating momentum
+- Penalty 0.85x for stocks >5% above SMA-20
 
+### Priority 4: Expected Profit Cap (MEDIUM, expected +1-2pp)
 
-Now let's retrain with the ensemble and run the backtest:
+- Cap expected profit at 2.5× target
+- Prefer moderate returns (1.5-2x target) over extreme outliers
 
+### Priority 5: Broader Symbol Coverage (MEDIUM, expected +1-2pp)
 
+- Per-symbol frequency cap: max 3 appearances per 5-day window
+- Stronger diversity penalty: 0.70^count for recent repeats
+- Reduce hard cap from 3 to 2 for merchandise/etfs
 
-Ensemble trained (XGBoost selected as best by walk-forward Sharpe 3.457, but all 3 models are saved for ensemble averaging). Now run the backtest:
+### Priority 6: Market Regime Gate (MEDIUM, expected +2-3pp)
 
+- In bearish regime (VOO -2% over 20 bars): reduce target or raise quality bar
+- Require higher confidence during downtrends
 
-What improved the model:
+### Priority 7: New Features (LOWER, expected +1-2pp)
 
-Ensemble averaging (XGBoost + LightGBM + RandomForest) — smooths out each model's biases
-Market regime feature — VOO 20-bar trend helps detect up/down markets
-Sharpe-based model selection — picks models that actually make money, not just classify well
+- consecutive_down_days, distance_to_52w_high, sector_momentum_rank
 
+---
 
-That's 3 models × (1 main train + 3 walk-forward folds) = 12 sequential training runs. Plus the final ensemble retrains all 3 on full data = 15 total.
+## v6 Targets
 
-Each individual model uses n_jobs=-1 (all CPU cores for internal parallelism), but the models themselves run one at a time.
+| Scenario | v5 | v6 Target |
+|----------|-----|-----------|
+| 3%/10d | 71.6% | ≥ 78% |
+| 5%/10d | 66.8% | ≥ 73% |
+| 8%/10d | 61.1% | ≥ 67% |
+| 10%/10d | 62.1% | ≥ 68% |
 
-Want me to parallelize the training across models? The main train + walk-forward for each model is independent, so they could run in parallel using concurrent.futures, cutting wall time roughly by 3x.
+Stop-out rate < 8%. Score ≥80 must outperform score 60-79. Min 40 unique symbols per scenario.
 
+---
 
-Now I understand the structure. The backtest runs 4 scenarios × ~19 Feb trading days = ~76 serial iterations of predict_as_of(). I'll parallelize across the 4 scenarios using ThreadPoolExecutor (shared memory avoids serializing the large 400K-row DataFrame).
+## Historical Notes (v1-v5 Evolution)
 
-Done. The backtest now runs all 4 scenarios in parallel using ThreadPoolExecutor(max_workers=4). Each thread processes its scenario's 19 Feb trading days independently, sharing the raw data in memory (no serialization overhead). This should give roughly a 4x speedup since each scenario no longer waits for the others.
-
-The training (trainer.py) was already parallelized with ProcessPoolExecutor for the 3 models. Want me to run the backtest to verify?
-
-
-
------------
-
-Current State: v4 Baseline
-Metric	Value
-Best AUC-ROC	0.6056 (XGBoost)
-Hit Rate (3%/10d)	71.6%
-Stopped Out	13.2% (25/190)
-Unique Symbols Picked	Only 31 out of 421
-Top 7 Symbols	51% of all picks
-Top 6 Improvements (by expected impact)
-1. Late-Month Collapse Filter (HIGH IMPACT)
-Hit rate drops from 80-100% (Feb 2-20) to 30-50% (Feb 23-27). The model keeps recommending the same symbols even as market conditions reverse. Fix: Add a short-term momentum gate — skip recommendations when a symbol's 5-day return is already > target profit (overextended), or when market regime flips bearish mid-month.
-
-2. Adaptive Stop-Loss (HIGH IMPACT)
-26% of trades get stopped out. The current fixed Close - 2×ATR stop is too tight for volatile stocks. Fix: Use per-symbol volatility-adjusted stops (e.g., wider stops for high-ATR symbols, tighter for low-vol). Also consider trailing stops instead of fixed stops.
-
-3. Confidence Calibration / Threshold Tuning (MEDIUM-HIGH)
-The model uses a flat 0.5 probability threshold. Most picks score 75-89 with little differentiation. Fix: Use Platt scaling or isotonic regression to calibrate probabilities, then raise the threshold (e.g., 0.6) to be more selective — fewer picks but higher quality.
-
-4. Temporal Features (MEDIUM)
-The model has day_of_week and week_of_month but no features capturing recent regime shifts. Fix: Add features like:
-
-5-day momentum reversal (was the stock up big recently, now rolling over?)
-Sector rotation signal (is the stock's sector gaining or losing vs SPY/VOO?)
-Earnings proximity (stocks near earnings dates are more volatile)
-Gap features (overnight gap up/down relative to ATR)
-5. Better Diversity Scoring (MEDIUM)
-Current diversity penalty (0.85^count) is weak — 7 stocks still dominate 51% of picks. Fix: Hard cap max 2 picks per sector, or use a min-correlation portfolio approach to ensure recommendations are diversified across sectors, not just categories.
-
-6. Feature Selection / Regularization (LOWER)
-43 features with AUC only 0.61 suggests noise. The WF Sharpe (3.46) vs backtest Sharpe (1.59) gap of 2.2x hints at overfitting. Fix: Use SHAP-based feature importance to drop low-value features, or add stronger L1/L2 regularization. Target ~25-30 high-signal features.
-
-Recommended Priority
-I'd start with #1 + #2 together (late-month filter + adaptive stops) — these directly address the two biggest loss sources (late-month collapse causes ~40% of misses, tight stops cause 26% of losses). Together they could push the 3%/10d hit rate from 71.6% toward 77-80%.
+- v1-v2: Dropped 18 zero-importance candlestick patterns, added MACD/BB/Stochastic
+- v3: Ensemble (XGBoost + LightGBM + RF), walk-forward CV, Sharpe-based selection, market regime
+- v4: Parallelized training (ProcessPoolExecutor) and backtest (ThreadPoolExecutor)
+- v5: Adaptive stop-loss (1.5-3.0x ATR), overextension filter, momentum deceleration, sector diversity (hard cap 3, penalty 0.80^count)
