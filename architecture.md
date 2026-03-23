@@ -1,10 +1,22 @@
 # Trading Agent — Architecture Document
 
+**Version:** v5 (March 2026)
+**Repository:** [ShacharMts/AlertsAnalyzer2](https://github.com/ShacharMts/Trading.Agent2)
+
+---
+
 ## 1. Overview
 
-A Python-based ML trading recommendation system that analyzes hourly candlestick data for ~517 tickers (S&P 500, S&P 100, sector ETFs, and commodity/crypto ETFs). It applies candlestick pattern recognition and moving average strategies to recommend stocks to buy, with risk assessment, holding period, target price, and stop-loss levels.
+A Python-based ML trading recommendation system that analyzes hourly candlestick data for **421 unique tickers** across 4 asset categories (S&P 500, S&P 100, sector ETFs, and commodity/crypto ETFs). It uses a **3-model ensemble** (XGBoost + LightGBM + RandomForest) with **49 engineered features**, walk-forward cross-validation, and a multi-factor scoring engine to produce daily buy recommendations with price targets and adaptive stop-losses.
 
-The system runs locally on macOS and deploys to the cloud via Docker.
+**Backtest performance (Feb 2026):**
+
+| Target | Hit Rate | Avg 10d P&L |
+|--------|----------|-------------|
+| 3% / 10 days | 71.6% | +3.86% |
+| 5% / 10 days | 66.8% | +2.95% |
+| 8% / 10 days | 61.1% | +2.32% |
+| 10% / 10 days | 62.1% | +2.52% |
 
 ---
 
@@ -32,7 +44,7 @@ The system runs locally on macOS and deploys to the cloud via Docker.
 │         │                │                                      │
 │         ▼                ▼                                      │
 │  ┌─────────────┐  ┌──────────────┐                              │
-│  │ Trained     │  │ Yahoo Finance│                              │
+│  │ Ensemble    │  │ Yahoo Finance│                              │
 │  │ Model (.pkl)│  │ Client       │                              │
 │  └─────────────┘  └──────────────┘                              │
 │         │                │                                      │
@@ -53,163 +65,539 @@ The system runs locally on macOS and deploys to the cloud via Docker.
 
 | Folder | Tickers | Description |
 |---|---|---|
-| `Data/snp500_hourly/` | ~396 | S&P 500 constituents |
-| `Data/snp100_hourly/` | ~101 | S&P 100 large-caps |
-| `Data/etfs_hourly/` | 15 | Sector & thematic ETFs (XLK, XLF, VOO, MAGS, etc.) |
+| `Data/snp500_hourly/` | ~500 | S&P 500 constituents |
+| `Data/snp100_hourly/` | ~100 | S&P 100 large-caps (subset of S&P 500) |
+| `Data/etfs_hourly/` | 15 | Sector & thematic ETFs (XLK, XLF, VOO, MAGS, HACK, IGV, XAR, etc.) |
 | `Data/merchandise_hourly/` | 5 | Commodities & crypto ETFs (GLD, USO, IBIT, ETHA, SLVR) |
+
+**After deduplication:** 421 unique symbols (S&P 100 entries preferred over S&P 500 copies).
+**Data range:** September 2, 2025 — March 23, 2026 (~404,544 total hourly candles).
 
 ### 3.2 File Format
 
-Pipe-delimited text files: `{SYMBOL}_hourly_candles.txt`
+Pipe-delimited (`|`) text files: `{SYMBOL}_hourly_candles.txt`
 
 | Column | Type | Description |
 |---|---|---|
-| Symbol | string | Ticker symbol |
-| DateTime | datetime | Candle timestamp (hourly) |
+| DateTime | datetime | Candle timestamp (hourly, market hours only) |
 | Open | float | Opening price |
 | High | float | High price |
 | Low | float | Low price |
 | Close | float | Closing price |
 | Volume | int | Trade volume |
-| Body | float | Candle body size (abs(Close - Open)) |
-| UpperShadow | float | Upper wick length |
-| LowerShadow | float | Lower wick length |
-| Direction | string | BULLISH / BEARISH |
 
-### 3.3 Data Storage Strategy
+**Derived columns** (computed at load time for candlestick patterns):
+- `Body` = `|Close - Open|`
+- `UpperShadow` = `High - max(Open, Close)`
+- `LowerShadow` = `min(Open, Close) - Low`
+- `Direction` = `BULLISH` if `Close >= Open`, else `BEARISH`
 
-- **Current phase**: Local flat files (pipe-delimited `.txt`), loaded into pandas DataFrames at runtime.
-- **Model artifacts**: Serialized to `models/` directory as `.pkl` files.
-- **No external database** — all data lives on the filesystem.
+### 3.3 Data Loading Process
+
+1. **`load_ticker_data(filepath)`** — Load single ticker with sorted DateTime index
+2. **`load_category(category)`** — Load all tickers for a category, add `category` column
+3. **`load_all_data()`** — Combine all 4 categories; deduplicate by `(Symbol, DateTime)` keeping first occurrence
+4. **Result:** Single DataFrame with columns: `Symbol`, `DateTime`, `Open`, `High`, `Low`, `Close`, `Volume`, `category`
+
+### 3.4 Data Storage Strategy
+
+- **Data files**: Local flat files (pipe-delimited `.txt`), loaded into pandas DataFrames at runtime
+- **Model artifacts**: Serialized to `models/` directory as `.pkl` and `.json` files
+- **No external database** — all state lives on the filesystem
 
 ---
 
 ## 4. Feature Engineering Pipeline
 
-### 4.1 Candlestick Pattern Features
+**49 features total** across 8 categories, computed per symbol with a minimum of 50 bars required.
 
-Based on **The Candlestick Trading Bible**, the following patterns are detected and encoded as binary features:
+### 4.1 Candlestick Pattern Features (4 features)
 
-| Category | Patterns |
-|---|---|
-| **Single-candle reversal** | Hammer, Inverted Hammer, Hanging Man, Shooting Star, Doji, Dragonfly Doji, Gravestone Doji, Marubozu |
-| **Dual-candle** | Bullish/Bearish Engulfing, Piercing Line, Dark Cloud Cover, Tweezer Top/Bottom |
-| **Triple-candle** | Morning Star, Evening Star, Three White Soldiers, Three Black Crows, Three Inside Up/Down |
-
-### 4.2 Moving Average Features
-
-Based on **Moving Average Trading**, computed over hourly candles:
+Source: `src/features/candlestick.py`
 
 | Feature | Description |
 |---|---|
-| SMA_7, SMA_20, SMA_50, SMA_200 | Simple Moving Averages (in hourly bars: ~1d, ~3d, ~1w, ~1mo) |
-| EMA_7, EMA_20, EMA_50 | Exponential Moving Averages |
-| SMA_crossover_7_20 | Golden/death cross signal (short vs. medium) |
-| SMA_crossover_20_50 | Medium-term trend cross |
-| MA_slope_20 | Slope of SMA-20 (trend direction & strength) |
-| price_vs_SMA_20 | Deviation of price from SMA-20 (%) |
-| price_vs_SMA_50 | Deviation of price from SMA-50 (%) |
+| `pat_three_white_soldiers` | 3 consecutive bullish candles with increasing closes (binary) |
+| `pat_three_black_crows` | 3 consecutive bearish candles with decreasing closes (binary) |
+| `bullish_score` | Count of active bullish signals (hammer, engulfing, marubozu bullish, 3WS) |
+| `bearish_score` | Count of active bearish signals (inv. hammer, bearish engulfing, marubozu bearish, 3BC) |
 
-### 4.3 Volume Features
+> Patterns with zero LightGBM feature importance were dropped in v2 (Hammer, Shooting Star, Doji, Engulfing individuals, etc.). Only the two triple-candle patterns and composite scores are retained.
 
-| Feature | Description |
-|---|---|
-| volume_sma_20 | 20-bar volume moving average |
-| volume_ratio | Current volume / volume_sma_20 |
-| volume_trend | Slope of volume SMA |
+### 4.2 Moving Average Features (10 features)
 
-### 4.4 Price Action Features
+Source: `src/features/moving_average.py`
 
 | Feature | Description |
 |---|---|
-| returns_1h, returns_7h, returns_20h | Percentage returns over windows |
-| volatility_20 | 20-bar rolling standard deviation of returns |
-| atr_14 | Average True Range (14-bar) |
-| rsi_14 | Relative Strength Index |
-| high_low_range | (High - Low) / Close |
-| body_to_range | Body / (High - Low) — candle "quality" |
+| `sma_7`, `sma_20`, `sma_50`, `sma_100` | Simple Moving Averages (7, 20, 50, 100 hourly bars) |
+| `ema_7`, `ema_20`, `ema_50` | Exponential Moving Averages |
+| `ma_slope_20` | Rate of change of SMA-20 over 5 bars (trend direction & strength) |
+| `price_vs_sma_20` | `(Close - SMA_20) / SMA_20 × 100` — deviation from 20-bar mean (%) |
+| `price_vs_sma_50` | `(Close - SMA_50) / SMA_50 × 100` — deviation from 50-bar mean (%) |
 
-### 4.5 Target Variable Construction
+### 4.3 Volume Features (3 features)
 
-For supervised learning, the target is derived from **forward-looking returns**:
+Source: `src/features/volume.py`
+
+| Feature | Description |
+|---|---|
+| `volume_sma_20` | 20-bar rolling average of volume |
+| `volume_ratio` | `Volume / volume_sma_20` — relative volume spike detection |
+| `volume_trend` | Slope of volume SMA over 5 bars |
+
+### 4.4 Price Action Features (7 features)
+
+Source: `src/features/price_action.py`
+
+| Feature | Description |
+|---|---|
+| `returns_1h` | 1-bar percentage return |
+| `returns_7h` | 7-bar percentage return (~1 day) |
+| `returns_20h` | 20-bar percentage return (~3 days) |
+| `volatility_20` | 20-bar rolling standard deviation of 1-bar returns |
+| `atr_14` | Average True Range (14-bar); uses `max(H-L, |H-Cprev|, |L-Cprev|)` |
+| `rsi_14` | Relative Strength Index (14-bar) |
+| `high_low_range` | `(High - Low) / Close × 100` — intrabar range (%) |
+| `body_to_range` | `Body / (High - Low)` — candle "quality" ratio |
+
+### 4.5 Momentum & Technical Indicators (12 features)
+
+Source: `src/features/momentum.py` — Added in v2/v5
+
+**MACD (12, 26, 9):**
+
+| Feature | Description |
+|---|---|
+| `macd_line` | EMA-12 minus EMA-26 |
+| `macd_signal` | 9-bar EMA of MACD line |
+| `macd_histogram` | MACD line minus signal line |
+
+**Bollinger Bands (20, 2σ):**
+
+| Feature | Description |
+|---|---|
+| `bb_upper` | `SMA_20 + 2 × Std(20)` |
+| `bb_lower` | `SMA_20 - 2 × Std(20)` |
+| `bb_width_pct` | Band width as % of SMA-20 |
+| `bb_position` | `(Close - bb_lower) / (bb_upper - bb_lower)` — position within bands (0=lower, 1=upper) |
+
+**Stochastic Oscillator (14, 3):**
+
+| Feature | Description |
+|---|---|
+| `stoch_k` | `(Close - Low14) / (High14 - Low14) × 100` |
+| `stoch_d` | 3-bar SMA of Stoch-K |
+
+**Multi-Day Returns & Momentum Gates (v5):**
+
+| Feature | Description |
+|---|---|
+| `returns_3d` | % change over 21 bars (3 days × 7 bars/day) |
+| `returns_5d` | % change over 35 bars (5 days × 7 bars/day) |
+| `returns_10d` | % change over 70 bars (10 days × 7 bars/day) |
+| `overextension` | `(Close - SMA_20) / SMA_20 × 100` — how far above 20-day mean |
+| `momentum_decel` | `returns_3d - returns_5d` — negative = decelerating momentum |
+| `gap_pct` | `(Open - Close_prev) / Close_prev × 100` — overnight gap |
+
+### 4.6 Calendar Features (2 features)
+
+Source: `src/features/pipeline.py`
+
+| Feature | Description |
+|---|---|
+| `day_of_week` | 0 (Monday) to 4 (Friday) |
+| `week_of_month` | 0 to 4 (week number within month) |
+
+### 4.7 Market Relative Strength (5 features)
+
+Source: `src/features/pipeline.py`
+
+**VOO (S&P 500 ETF) as market proxy:**
+
+| Feature | Description |
+|---|---|
+| `relative_strength` | Stock return − VOO return (per-bar outperformance) |
+| `relative_strength_20` | Rolling 20-bar average of relative strength |
+| `market_regime` | Rolling 20-bar return of VOO (positive = uptrend, negative = downtrend) |
+
+**Sector-relative returns (v5):**
+
+| Feature | Description |
+|---|---|
+| `vs_sector` | Stock return − category average return (peer outperformance) |
+| `vs_sector_20` | Rolling 20-bar average of vs_sector |
+
+### 4.8 Categorical Encodings (2 features)
+
+| Feature | Description |
+|---|---|
+| `direction_num` | 1 if bullish candle, 0 if bearish |
+| `category_num` | `{0: "snp500", 1: "snp100", 2: "etfs", 3: "merchandise"}` |
+
+### 4.9 Feature Pipeline Orchestration
+
+Source: `src/features/pipeline.py` → `engineer_features(data)`
 
 ```
-future_return_Nd = (max_close_in_next_N_days - current_close) / current_close
+1. Load all data across 4 categories
+2. Compute market returns (VOO) and market regime (20-bar rolling)
+3. Compute sector returns (per-category average returns)
+4. For each symbol (≥ 50 bars):
+   a. Add candlestick pattern features
+   b. Add moving average features
+   c. Add volume features
+   d. Add price action features
+   e. Add momentum & technical indicators
+   f. Add calendar features
+   g. Add relative strength (vs VOO)
+   h. Add sector-relative features
+   i. Encode direction & category numerically
+5. Concatenate all symbols → return combined DataFrame
 ```
 
-- **Classification target**: `1` (BUY) if `future_return_Nd >= expected_profit_threshold`, else `0`.
-- **Regression targets**: `optimal_hold_days`, `target_price`, `stop_loss_price`.
-- Stop-loss: lowest low in the next N days, or a fixed ATR-based trailing stop.
+**Feature column getter:** `get_feature_columns(df)` returns list of 49 feature names, excluding all non-feature columns (`Symbol`, `DateTime`, `Open`, `High`, `Low`, `Close`, `Volume`, `category`, `target_*`, `future_*`, `sector_return`, `market_return`).
 
 ---
 
-## 5. Model Architecture
+## 5. Target Variable Construction
 
-### 5.1 Model Selection — Comparative Evaluation
+Source: `src/model/targets.py`
 
-Three model families will be trained, evaluated, and compared. The best performer is selected automatically.
+### 5.1 Forward-Looking Returns
 
-| Model | Library | Rationale |
+**Parameters:**
+- `period_days = 10` (default forward horizon)
+- `profit_threshold = 3.0%` (default)
+- `HOURLY_BARS_PER_DAY = 7` (9:30 AM – 4:00 PM ET)
+
+**Targets computed per symbol (sorted by DateTime):**
+
+| Target | Formula | Description |
 |---|---|---|
-| **XGBoost** | `xgboost` | Strong on tabular data, handles feature interactions well |
-| **LightGBM** | `lightgbm` | Fast training, good with high-cardinality features |
-| **Random Forest** | `scikit-learn` | Robust baseline, less prone to overfitting |
+| `future_max_close` | `max(Close[t+1 : t + period × 7])` | Best achievable close in forward window |
+| `future_min_low` | `min(Low[t+1 : t + period × 7])` | Worst low in forward window |
+| `future_return` | `(future_max_close - Close) / Close × 100` | Maximum upside potential (%) |
+| `target_buy` | `1` if `future_return ≥ threshold`, else `0` | Classification label |
+| `optimal_hold_days` | `argmax(close_in_window) / 7` | Days until peak close |
+| `target_price` | `future_max_close` | Price at optimal exit |
 
-> **Optional stretch**: An LSTM model via PyTorch for sequence-aware predictions, evaluated against the tabular models.
+### 5.2 Adaptive Stop-Loss (v5)
 
-### 5.2 Training Strategy
+Uses ATR-based volatility to dynamically adjust stop-loss width:
 
-- **Single unified model** across all ~517 tickers.
-- Ticker category encoded as a categorical feature (`snp500`, `snp100`, `etf`, `merchandise`).
-- **Train/test split**: Time-based (e.g., first 80% of data for training, last 20% for testing). No random split — preserves temporal ordering.
-- **Cross-validation**: Walk-forward validation with expanding window.
-- **Hyperparameter tuning**: Optuna for Bayesian optimization.
+```python
+atr_pct = ATR_14 / Close                     # Normalize ATR to price
+median_atr_pct = median(atr_pct)              # Median across all bars
 
-### 5.3 Model Outputs
+# Dynamic multiplier: wider stops for volatile stocks, tighter for stable
+if atr_pct > median_atr_pct:
+    # High-volatility regime → multiplier 2.0–3.0
+    multiplier = clip(2.0 + (atr_pct - median) / median, 2.0, 3.0)
+else:
+    # Low-volatility regime → multiplier 1.5–2.0
+    multiplier = clip(2.0 - (median - atr_pct) / median × 0.5, 1.5, 2.0)
 
-For each ticker at prediction time, the model produces:
+stop_loss = max(Close - multiplier × ATR_14, future_min_low × 0.99)
+```
 
-| Output | Type | Description |
+| Volatility Regime | ATR Multiplier | Effect |
 |---|---|---|
-| `buy_probability` | float 0–1 | Probability that the stock meets the profit target |
-| `score` | int 1–100 | Normalized confidence score (from buy_probability) |
-| `predicted_return` | float | Expected % return over the holding period |
-| `optimal_hold_days` | int | Recommended number of days to hold |
-| `target_price` | float | Predicted price at optimal exit |
-| `stop_loss` | float | Recommended stop-loss price (ATR-based) |
+| Low-vol (< median) | 1.5× – 2.0× | Tighter stops, less drawdown tolerance |
+| High-vol (> median) | 2.0× – 3.0× | Wider stops, avoid premature stop-outs |
+| Hard floor | — | `future_min_low × 0.99` |
 
-### 5.4 Evaluation Metrics
+---
 
-| Metric | Purpose |
-|---|---|
-| Precision @ top-N | Of the top N recommendations, how many were actually profitable? |
-| ROI simulation | Backtest: simulated return using model picks |
-| AUC-ROC | Classification discrimination ability |
-| Sharpe Ratio | Risk-adjusted return of model's portfolio vs. baseline |
-| MAE on hold days | Accuracy of holding period prediction |
+## 6. Model Architecture
 
-### 5.5 Model Persistence
+### 6.1 Ensemble Design
+
+Three gradient-boosted tree models are trained independently, then combined into an ensemble. Predictions are **averaged probabilities** from all three:
+
+```
+buy_probability = (P_xgboost + P_lightgbm + P_random_forest) / 3
+```
+
+### 6.2 Model Configurations
+
+**XGBoost:**
+```python
+XGBClassifier(
+    n_estimators=500, max_depth=7, learning_rate=0.03,
+    subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+    reg_alpha=0.1, reg_lambda=1.0, scale_pos_weight=1.5,
+    eval_metric="logloss", random_state=42, n_jobs=-1
+)
+```
+
+**LightGBM** (best single model by walk-forward Sharpe):
+```python
+LGBMClassifier(
+    n_estimators=500, max_depth=7, learning_rate=0.03,
+    subsample=0.8, colsample_bytree=0.8, min_child_weight=5,
+    reg_alpha=0.1, reg_lambda=1.0, scale_pos_weight=1.5,
+    random_state=42, n_jobs=-1, verbose=-1
+)
+```
+
+**Random Forest:**
+```python
+RandomForestClassifier(
+    n_estimators=500, max_depth=15, min_samples_split=10,
+    min_samples_leaf=5, max_features="sqrt",
+    class_weight={0: 1, 1: 1.5}, random_state=42, n_jobs=-1
+)
+```
+
+### 6.3 Class Imbalance Handling
+
+Target distribution: **71.6% HOLD** / **28.4% BUY**. All models use `scale_pos_weight=1.5` (or equivalent `class_weight`) to upweight the minority BUY class.
+
+### 6.4 Training Pipeline
+
+Source: `src/model/trainer.py`
+
+```
+Phase 1: Data Preparation
+  ├─ Load 421 symbols across 4 categories
+  ├─ Engineer 49 features via pipeline
+  ├─ Add forward-looking targets (10d horizon, 3% threshold)
+  └─ Drop NaN rows → 362,406 clean training rows
+
+Phase 2: Time-Based Train/Test Split
+  ├─ Per-symbol: first 80% → train, last 20% → test
+  ├─ Training set: ~289,925 rows
+  └─ Test set: ~72,481 rows
+
+Phase 3: Feature Scaling
+  └─ StandardScaler (zero mean, unit variance), fit on train, transform test
+
+Phase 4: Parallel Model Training
+  ├─ ProcessPoolExecutor(max_workers=3)
+  ├─ Each model: train → evaluate on test → walk-forward CV (3 folds)
+  └─ Progress output: [1/3], [2/3], [3/3]
+
+Phase 5: Walk-Forward Cross-Validation (per model)
+  ├─ n_folds = 3, expanding window
+  ├─ Split full ordered dataset into 4 windows
+  ├─ Fold i: train on first (i+1) windows, test on next window
+  └─ Metrics per fold: AUC-ROC, precision, backtest ROI, Sharpe ratio
+
+Phase 6: Model Selection
+  ├─ Primary criterion: Walk-forward average Sharpe ratio
+  └─ Selected: LightGBM (WF Sharpe = 2.845)
+
+Phase 7: Ensemble Training
+  ├─ Retrain all 3 models on full 362,406 rows
+  └─ Save as dict: {"xgboost": model, "lightgbm": model, "random_forest": model}
+```
+
+### 6.5 Model Performance (v5, March 2026)
+
+| Model | AUC | Accuracy | Precision | Recall | P@10 | P@20 | Backtest ROI | WF Sharpe | Time |
+|---|---|---|---|---|---|---|---|---|---|
+| **LightGBM** | 0.606 | 0.368 | 0.331 | 0.958 | 0.80 | 0.70 | +4.26% | **2.845** | 18.8s |
+| XGBoost | 0.608 | 0.381 | 0.334 | 0.942 | 1.00 | 0.70 | +6.22% | 1.935 | 11.6s |
+| Random Forest | 0.600 | 0.355 | 0.328 | 0.973 | 0.60 | 0.65 | +6.48% | 1.454 | 101.2s |
+
+**Selection rationale:** LightGBM wins on walk-forward Sharpe (2.845) — the most realistic measure of risk-adjusted profitability in simulated out-of-sample conditions. XGBoost has slightly higher raw AUC but lower Sharpe.
+
+### 6.6 Model Persistence
 
 ```
 models/
-├── best_model.pkl            # Serialized best model
-├── model_metadata.json       # Training date, metrics, hyperparams, model type
-├── feature_columns.json      # Ordered feature list for inference consistency
-└── scaler.pkl                # Feature scaler (if applicable)
+├── best_model.pkl            # 3-model ensemble dict (XGBoost + LightGBM + RF)
+├── model_metadata.json       # Training date, metrics, hyperparams, all results
+├── feature_columns.json      # 49 ordered feature names for inference consistency
+└── scaler.pkl                # StandardScaler fitted on training features
 ```
 
 ---
 
-## 6. API Design (FastAPI)
+## 7. Prediction & Recommendation Engine
 
-### 6.1 Endpoints
+Source: `src/model/predictor.py`
+
+### 7.1 Scoring Pipeline
+
+**Step 1 — Model Confidence:**
+```
+buy_probability = mean(P_xgb, P_lgbm, P_rf)    # 0.0 to 1.0
+```
+
+**Step 2 — Historical Feasibility:**
+Analyze each symbol's last 20 trading days to check how often the target was achievable:
+```
+max_gains_in_window = [max gain in each N-day rolling window]
+hist_pct = % of windows achieving ≥ expected_profit
+avg_max_gain = mean(max_gains)
+gain_ratio = min(avg_max_gain / expected_profit, 2.0)
+```
+
+**Step 3 — Overextension Penalty (v5):**
+Reduce score for stocks that already moved too much:
+```python
+if returns_5d > expected_profit:
+    overext_penalty = max(0.5, 1.0 - (returns_5d - expected_profit) / 20.0)
+else:
+    overext_penalty = 1.0
+```
+
+**Step 4 — Momentum Deceleration Penalty (v5):**
+Penalize stocks losing upward momentum:
+```python
+if momentum_decel < -3.0:
+    decel_penalty = max(0.7, 1.0 + momentum_decel / 30.0)
+else:
+    decel_penalty = 1.0
+```
+
+**Step 5 — Combined Score:**
+```python
+raw_score = (
+    0.40 × model_confidence +
+    0.30 × (hist_pct / 100.0) +
+    0.30 × min(gain_ratio, 1.0)
+)
+score = raw_score × overext_penalty × decel_penalty
+score_1_to_100 = clip(score × 100, 1, 100)
+```
+
+**Weight breakdown:**
+- 40% — Model ensemble prediction confidence
+- 30% — Historical feasibility (how often did this symbol achieve the target)
+- 30% — Gain achievability (is the target realistic given recent price action)
+- Multiplicative penalties: overextension (0.5–1.0×) and momentum deceleration (0.7–1.0×)
+
+### 7.2 Diversity Filtering (v5)
+
+To prevent sector concentration in recommendations:
+
+| Rule | Value | Description |
+|---|---|---|
+| Category penalty | `0.80 ^ count` | Each additional pick from same sector is penalized exponentially |
+| Hard cap | 3 per category | Maximum 3 recommendations from any single category |
+| Acceptance threshold | ≥ 60% of last selected score | Adjusted score must be at least 60% of the previous pick's score |
+
+### 7.3 Adaptive Stop-Loss & Price Targets
+
+Same ATR-based adaptive logic used in training targets (§5.2), applied at prediction time:
+```python
+est_target_price = Close × (1 + est_return / 100)
+est_stop_loss    = Close - multiplier × ATR_14    # multiplier = 1.5–3.0
+```
+
+### 7.4 Recommendation Output
+
+| Field | Type | Description |
+|---|---|---|
+| `symbol` | string | Ticker symbol |
+| `current_price` | float | Latest close price |
+| `expected_profit_pct` | float | Estimated return before target hit (%) |
+| `period_days` | int | Recommended holding period |
+| `score` | int 1–100 | Multi-factor confidence score |
+| `target_price` | float | Estimated exit price |
+| `stop_loss` | float | Adaptive ATR-based stop price |
+| `sma_20` | float | Current 20-bar SMA |
+| `vs_sma_20` | string | "Above" or "Below" SMA-20 |
+| `ytd_pct` | float | Year-to-date return (%) |
+| `month_pct` | float | Month-to-date return (%) |
+
+---
+
+## 8. Backtesting Framework
+
+Source: `scripts/backtest_feb.py`
+
+### 8.1 Design
+
+| Parameter | Value |
+|---|---|
+| Test period | February 2026 (19 trading days) |
+| Scenarios | 4 (3%, 5%, 8%, 10% profit targets, all 10-day horizon) |
+| Stocks per day | 10 recommendations |
+| Total tasks | 76 (4 scenarios × 19 days) |
+| Parallelization | `ThreadPoolExecutor(max_workers=20)` |
+
+### 8.2 Methodology
+
+For each scenario × trading date:
+1. Load all available data **up to (but not including)** the buy date — no look-ahead bias
+2. Engineer features, generate 10 recommendations using the trained ensemble
+3. Apply same scoring pipeline as production (overextension, momentum decel, diversity)
+4. Look up actual prices 5 and 10 trading days later
+5. Classify each recommendation:
+   - **HIT TARGET** — Price reached ≥ target within 10 days
+   - **STOPPED OUT** — Price hit stop-loss before reaching target
+   - **MISSED** — Neither target nor stop reached within 10 days
+   - **N/A** — Insufficient future data
+
+### 8.3 Results (v5, February 2026)
+
+| Scenario | Hit Rate | Missed | Stopped Out | Avg 5d P&L | Avg 10d P&L |
+|---|---|---|---|---|---|
+| **3% / 10d** | **136/190 (71.6%)** | 34 | 20 | +3.12% | +3.86% |
+| **5% / 10d** | **127/190 (66.8%)** | 37 | 26 | +2.59% | +2.95% |
+| **8% / 10d** | **116/190 (61.1%)** | 41 | 33 | +1.85% | +2.32% |
+| **10% / 10d** | **118/190 (62.1%)** | 37 | 35 | +2.15% | +2.52% |
+
+### 8.4 Performance History (Version Progression)
+
+| Scenario | v1 (baseline) | v2 (features) | v3 (ensemble) | v4 (parallel) | v5 (current) |
+|---|---|---|---|---|---|
+| 3% / 10d | — | — | 71.6% | 71.6% | **71.6%** |
+| 5% / 10d | — | — | 63.7% | 65.8% | **66.8%** |
+| 8% / 10d | — | — | 52.6% | 57.4% | **61.1%** |
+| 10% / 10d | — | — | 48.4% | 53.2% | **62.1%** |
+
+Key improvements in v5: +3.7pp on 8% target, +8.9pp on 10% target — driven by adaptive stops and overextension filtering.
+
+---
+
+## 9. Evaluation Metrics
+
+Source: `src/model/evaluator.py`
+
+### 9.1 Classification Metrics
+
+| Metric | Description |
+|---|---|
+| Accuracy | Correct predictions / total |
+| Precision | TP / (TP + FP) — among predicted buys, how many correct |
+| Recall | TP / (TP + FN) — among actual buys, what fraction detected |
+| F1-Score | Harmonic mean of precision and recall |
+| AUC-ROC | ROC area under curve (requires both classes) |
+
+### 9.2 Trading-Specific Metrics
+
+| Metric | Description |
+|---|---|
+| Precision@10 | Precision among top 10 highest-probability predictions |
+| Precision@20 | Precision among top 20 predictions |
+| Avg Return % | Mean future return of top-N predicted buys |
+| Positive Rate % | % of top-N trades that were profitable |
+| Sharpe Ratio | Mean return / Std(returns) — risk-adjusted performance |
+
+### 9.3 Walk-Forward Validation
+
+| Metric | Description |
+|---|---|
+| WF Avg AUC | Mean AUC across 3 expanding folds |
+| WF Avg ROI | Mean backtest return across folds |
+| WF Avg Sharpe | **Primary selection criterion** — mean Sharpe across folds |
+
+---
+
+## 10. API Design (FastAPI)
+
+### 10.1 Endpoints
 
 #### `POST /recommend`
 
 Returns top-N stock recommendations.
 
 **Request body:**
-
 ```json
 {
   "num_stocks": 5,
@@ -225,11 +613,10 @@ Returns top-N stock recommendations.
 | `period_days` | int | Yes | Investment horizon in trading days |
 
 **Response:**
-
 ```json
 {
   "generated_at": "2026-03-23T14:00:00Z",
-  "model_version": "xgboost_v1_20260320",
+  "model_version": "ensemble_v3_20260323",
   "parameters": {
     "num_stocks": 5,
     "expected_profit_pct": 3.0,
@@ -238,14 +625,16 @@ Returns top-N stock recommendations.
   "recommendations": [
     {
       "symbol": "NVDA",
-      "full_name": "NVIDIA Corporation",
       "current_price": 142.50,
-      "ytd_pct": 12.3,
       "expected_profit_pct": 3.2,
       "period_days": 8,
       "score": 92,
       "target_price": 147.06,
-      "stop_loss": 138.25
+      "stop_loss": 138.25,
+      "sma_20": 141.80,
+      "vs_sma_20": "Above",
+      "ytd_pct": 12.3,
+      "month_pct": 4.1
     }
   ]
 }
@@ -253,26 +642,20 @@ Returns top-N stock recommendations.
 
 #### `POST /refresh`
 
-Pulls latest hourly candle data from Yahoo Finance for all tickers in the data folders.
+Pulls latest hourly candle data from Yahoo Finance for all tickers.
 
 **Request body:**
-
 ```json
 {
   "categories": ["snp100", "snp500", "etfs", "merchandise"]
 }
 ```
 
-- If `categories` is omitted, all categories are refreshed.
-- The endpoint reads existing ticker files to determine which symbols to fetch.
-- New data is appended to existing files (deduped by DateTime).
-
 **Response:**
-
 ```json
 {
   "status": "completed",
-  "tickers_updated": 517,
+  "tickers_updated": 421,
   "new_candles_added": 3420,
   "errors": []
 }
@@ -286,39 +669,37 @@ Health check returning model status and data freshness.
 {
   "status": "healthy",
   "model_loaded": true,
-  "model_version": "xgboost_v1_20260320",
+  "model_version": "ensemble_v3_20260323",
   "data_last_updated": "2026-03-23T12:00:00Z",
-  "total_tickers": 517
+  "total_tickers": 421
 }
 ```
 
 #### `POST /train`
 
-Triggers model retraining. Runs all candidate models, compares results, selects the best.
+Triggers model retraining. Runs all 3 candidate models, compares via walk-forward Sharpe, saves ensemble.
 
 **Response:**
-
 ```json
 {
   "status": "completed",
-  "best_model": "xgboost",
+  "best_model": "lightgbm",
   "metrics": {
-    "auc_roc": 0.78,
-    "precision_at_10": 0.72,
-    "backtest_roi_pct": 14.5
+    "auc_roc": 0.606,
+    "precision_at_10": 0.80,
+    "wf_sharpe": 2.845
   },
   "models_evaluated": [
-    { "name": "xgboost", "auc_roc": 0.78 },
-    { "name": "lightgbm", "auc_roc": 0.76 },
-    { "name": "random_forest", "auc_roc": 0.71 }
+    { "name": "lightgbm", "wf_sharpe": 2.845 },
+    { "name": "xgboost", "wf_sharpe": 1.935 },
+    { "name": "random_forest", "wf_sharpe": 1.454 }
   ]
 }
 ```
 
-### 6.2 Error Handling
+### 10.2 Error Handling
 
 Standard HTTP status codes with JSON error bodies:
-
 ```json
 {
   "detail": "Model not trained yet. Call POST /train first.",
@@ -328,139 +709,130 @@ Standard HTTP status codes with JSON error bodies:
 
 ---
 
-## 7. Project Structure
+## 11. Project Structure
 
 ```
 Trading.Agent2/
-├── spec.md
-├── architecture.md
-├── Dockerfile
-├── docker-compose.yml
-├── requirements.txt
-├── README.md
+├── architecture.md              # This document
+├── spec.md                      # Original requirements specification
+├── requirements.txt             # Python dependencies
+├── backtest_feb_report.md       # Latest backtest results (auto-generated)
+├── backtest_feb_results.csv     # Raw backtest data (760 rows)
 │
 ├── Data/
-│   ├── snp500_hourly/          # ~396 ticker files
-│   ├── snp100_hourly/          # ~101 ticker files
-│   ├── etfs_hourly/            # 15 ticker files
-│   └── merchandise_hourly/     # 5 ticker files
+│   ├── snp500_hourly/           # ~500 ticker files
+│   ├── snp100_hourly/           # ~100 ticker files
+│   ├── etfs_hourly/             # 15 ticker files
+│   └── merchandise_hourly/      # 5 ticker files
 │
 ├── Spec/
 │   ├── THE CANDLESTICK TRADING BIBLE.pdf
 │   └── Moving Average Trading.pdf
 │
-├── models/                     # Trained model artifacts
-│   ├── best_model.pkl
-│   ├── model_metadata.json
-│   ├── feature_columns.json
-│   └── scaler.pkl
+├── models/                      # Trained model artifacts
+│   ├── best_model.pkl           # 3-model ensemble (XGBoost + LightGBM + RF)
+│   ├── model_metadata.json      # Training metrics, version, all model results
+│   ├── feature_columns.json     # 49 ordered feature names
+│   └── scaler.pkl               # StandardScaler (fitted on training data)
 │
 ├── src/
 │   ├── __init__.py
-│   ├── main.py                 # FastAPI app entry point
-│   │
-│   ├── api/
-│   │   ├── __init__.py
-│   │   ├── routes.py           # Endpoint definitions
-│   │   └── schemas.py          # Pydantic request/response models
 │   │
 │   ├── data/
 │   │   ├── __init__.py
-│   │   ├── loader.py           # Read pipe-delimited files into DataFrames
-│   │   ├── refresher.py        # Yahoo Finance data fetcher (yfinance)
-│   │   └── ticker_registry.py  # Scan Data/ folders, resolve ticker lists
+│   │   ├── loader.py            # Load pipe-delimited files → DataFrames
+│   │   └── ticker_registry.py   # Scan Data/ folders, discover tickers
 │   │
 │   ├── features/
 │   │   ├── __init__.py
-│   │   ├── candlestick.py      # Candlestick pattern detection
-│   │   ├── moving_average.py   # MA/EMA computation & crossovers
-│   │   ├── volume.py           # Volume-based features
-│   │   ├── price_action.py     # RSI, ATR, returns, volatility
-│   │   └── pipeline.py         # Orchestrates full feature engineering
+│   │   ├── candlestick.py       # Pattern detection (3WS, 3BC, composite scores)
+│   │   ├── moving_average.py    # SMA/EMA computation & slopes
+│   │   ├── volume.py            # Volume ratio, trend
+│   │   ├── price_action.py      # Returns, volatility, RSI, ATR
+│   │   ├── momentum.py          # MACD, Bollinger, Stochastic, multi-day returns
+│   │   └── pipeline.py          # Feature orchestration, sector/market returns
 │   │
 │   ├── model/
 │   │   ├── __init__.py
-│   │   ├── trainer.py          # Train, evaluate, compare models
-│   │   ├── predictor.py        # Load model, generate predictions
-│   │   ├── targets.py          # Target variable construction
-│   │   └── evaluator.py        # Metrics, backtesting, model comparison
+│   │   ├── targets.py           # Forward-looking targets, adaptive stop-loss
+│   │   ├── trainer.py           # Train, evaluate, compare, save ensemble
+│   │   ├── predictor.py         # Inference, scoring, diversity filtering
+│   │   └── evaluator.py         # Classification + trading-specific metrics
 │   │
 │   └── utils/
 │       ├── __init__.py
-│       ├── config.py           # App configuration (paths, defaults)
-│       └── ticker_info.py      # Symbol → full name mapping (yfinance)
+│       └── config.py            # Paths, constants, category mappings
+│
+├── scripts/
+│   ├── train.py                 # Training entry point
+│   ├── backtest_feb.py          # Feb 2026 backtesting framework
+│   ├── analyze_results.py       # Result analysis utilities
+│   └── analyze_best_day.py      # Best/worst day analysis
 │
 └── tests/
-    ├── test_features.py
-    ├── test_model.py
-    ├── test_api.py
-    └── test_data_loader.py
+    └── __init__.py
 ```
 
 ---
 
-## 8. Technology Stack
+## 12. Configuration & Constants
+
+Source: `src/utils/config.py`
+
+```python
+# Paths
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+DATA_DIR = PROJECT_ROOT / "Data"
+MODELS_DIR = PROJECT_ROOT / "models"
+BEST_MODEL_PATH = MODELS_DIR / "best_model.pkl"
+MODEL_METADATA_PATH = MODELS_DIR / "model_metadata.json"
+FEATURE_COLUMNS_PATH = MODELS_DIR / "feature_columns.json"
+SCALER_PATH = MODELS_DIR / "scaler.pkl"
+
+# Data Format
+FILE_DELIMITER = "|"
+FILE_SUFFIX = "_hourly_candles.txt"
+
+# Time Constants
+HOURLY_BARS_PER_DAY = 7          # ~7 trading hours/day (9:30–16:00 ET)
+
+# Training Defaults
+TRAIN_FRACTION = 0.8              # 80% train, 20% test
+DEFAULT_PROFIT_THRESHOLD = 3.0    # % minimum gain to label BUY
+DEFAULT_PERIOD_DAYS = 10          # Forward-looking horizon
+DEFAULT_NUM_STOCKS = 5            # Default top-N recommendations
+
+# Category Mapping
+DATA_CATEGORIES = {
+    "snp500": DATA_DIR / "snp500_hourly",
+    "snp100": DATA_DIR / "snp100_hourly",
+    "etfs": DATA_DIR / "etfs_hourly",
+    "merchandise": DATA_DIR / "merchandise_hourly",
+}
+```
+
+---
+
+## 13. Technology Stack
 
 | Component | Technology | Version |
 |---|---|---|
-| Language | Python | 3.11+ |
-| API Framework | FastAPI | 0.110+ |
-| ASGI Server | Uvicorn | 0.29+ |
-| ML - Gradient Boosting | XGBoost | 2.0+ |
-| ML - Gradient Boosting | LightGBM | 4.0+ |
-| ML - Ensemble | scikit-learn | 1.4+ |
-| Hyperparameter Tuning | Optuna | 3.6+ |
+| Language | Python | 3.14 |
+| ML — Gradient Boosting | XGBoost | 2.0+ |
+| ML — Gradient Boosting | LightGBM | 4.0+ |
+| ML — Ensemble & Utilities | scikit-learn | 1.4+ |
 | Data Manipulation | pandas, numpy | latest |
-| Technical Analysis | ta-lib or pandas-ta | latest |
-| Market Data | yfinance | 0.2+ |
-| Serialization | joblib | latest |
-| Validation | Pydantic | 2.0+ |
-| Containerization | Docker | latest |
+| Model Serialization | joblib | latest |
+| API Framework (planned) | FastAPI | 0.110+ |
+| ASGI Server (planned) | Uvicorn | 0.29+ |
+| Market Data (planned) | yfinance | 0.2+ |
+| Validation (planned) | Pydantic | 2.0+ |
+| Containerization (planned) | Docker | latest |
 | Testing | pytest | 8.0+ |
 
 ---
 
-## 9. Deployment
-
-### 9.1 Local (macOS)
-
-```bash
-pip install -r requirements.txt
-uvicorn src.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-### 9.2 Docker
-
-```dockerfile
-FROM python:3.11-slim
-
-WORKDIR /app
-COPY requirements.txt .
-RUN pip install --no-cache-dir -r requirements.txt
-
-COPY . .
-
-EXPOSE 8000
-CMD ["uvicorn", "src.main:app", "--host", "0.0.0.0", "--port", "8000"]
-```
-
-The `Data/` and `models/` directories are mounted as Docker volumes so data persists across container restarts:
-
-```yaml
-# docker-compose.yml
-services:
-  trading-agent:
-    build: .
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./Data:/app/Data
-      - ./models:/app/models
-```
-
----
-
-## 10. Data Flow
+## 14. Data Flow
 
 ```
  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
@@ -471,50 +843,73 @@ services:
                                                   ▼
  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
  │ POST /train  │────▶│ Feature Eng. │────▶│ Train Models │
- │              │     │ Pipeline     │     │ (XGB/LGB/RF) │
+ │  (or CLI)    │     │ (49 features)│     │ (XGB/LGB/RF) │
  └──────────────┘     └──────────────┘     └──────┬───────┘
                                                   │
-                                           Compare & select
+                                     Walk-Forward CV (3 folds)
+                                     Select by Sharpe ratio
                                                   │
                                                   ▼
                                            ┌──────────────┐
-                                           │ Save best to │
+                                           │ Save ensemble│
                                            │ models/*.pkl │
                                            └──────────────┘
                                                   │
                                                   ▼
  ┌──────────────┐     ┌──────────────┐     ┌──────────────┐
- │POST /recommend────▶│ Load model + │────▶│ Return top-N │
- │              │     │ latest data  │     │ ranked picks │
- └──────────────┘     └──────────────┘     └──────────────┘
+ │POST /recommend────▶│ Ensemble     │────▶│ Score, rank, │
+ │  (or CLI)    │     │ inference +  │     │ diversify,   │
+ └──────────────┘     │ multi-factor │     │ return top-N │
+                      │ scoring      │     └──────────────┘
+                      └──────────────┘
 ```
 
-### Workflow:
+### Workflow
 
-1. **Refresh** → `POST /refresh` pulls latest hourly data from Yahoo Finance, appends to existing files
-2. **Train** → `POST /train` runs the full pipeline: load data → engineer features → build targets → train 3 models → evaluate → save best
-3. **Recommend** → `POST /recommend` loads the trained model, applies features to latest data, scores all tickers, returns top-N filtered by profit target and period
+1. **Refresh** → Pull latest hourly data from Yahoo Finance, append to existing files
+2. **Train** → Load data → engineer 49 features → build targets → train 3 models in parallel → walk-forward CV → select best by Sharpe → train ensemble on full data → save artifacts
+3. **Recommend** → Load ensemble + scaler → apply features to latest data → score with confidence + feasibility + penalties → diversify across sectors → return top-N with targets & stops
+4. **Backtest** → Replay training dates with out-of-sample evaluation → verify hit rates & P&L
 
 ---
 
-## 11. Key Design Decisions
+## 15. Key Design Decisions
 
 | Decision | Rationale |
 |---|---|
+| **3-model ensemble** | Averaging probabilities from XGBoost + LightGBM + RF reduces overfitting and improves stability |
+| **Walk-forward Sharpe selection** | Selects the model with best risk-adjusted returns in realistic out-of-sample conditions, not just raw accuracy |
 | **Single unified model** | One model learns cross-asset patterns; ticker category is a feature, not a model boundary |
-| **Flat files over DB** | Simplicity for current scale (~517 files); avoids infrastructure overhead |
-| **FastAPI** | Async-ready, auto-generated OpenAPI docs, Pydantic validation |
+| **Flat files over DB** | Simplicity for current scale (~421 symbols); avoids infrastructure overhead |
 | **Time-based train/test split** | Prevents look-ahead bias inherent in random splits on time-series data |
-| **Model comparison built-in** | Automatically selects the best model — no manual tuning required |
-| **ATR-based stop-loss** | Adapts to each stock's volatility rather than using a fixed percentage |
-| **No auth** | Internal/local use; add API key middleware later if needed |
+| **Adaptive ATR stop-loss** | Adjusts stop width per stock's volatility regime (1.5×–3.0× ATR) instead of fixed percentage |
+| **Overextension filter** | Avoids recommending stocks that already moved >target% in 5 days — catches "too late" entries |
+| **Momentum deceleration gate** | Penalizes stocks where 3-day momentum is slowing relative to 5-day — catches fading trends |
+| **Sector diversity hard cap** | Max 3 picks per category with 0.80× penalty per repeat — prevents concentration risk |
+| **Multi-factor scoring** | 40% model + 30% historical feasibility + 30% gain ratio — balanced between ML confidence and market reality |
+| **Parallel training** | `ProcessPoolExecutor(3)` trains all models simultaneously (~2× speedup on multi-core) |
+| **Parallel backtest** | `ThreadPoolExecutor(20)` processes 76 scenario×date tasks concurrently |
 
 ---
 
-## 12. Constraints & Assumptions
+## 16. Constraints & Assumptions
 
-- Yahoo Finance rate limits may affect refresh speed for 500+ tickers; the refresher batches requests with delays.
-- The model assumes sufficient historical data (at least 2–3 months of hourly candles per ticker).
-- Predictions are informational — not financial advice.
-- Market hours data only (no extended/pre-market).
-- The `full_name` for each ticker is resolved via `yfinance` ticker info and cached locally.
+- **Data:** Requires ≥ 50 hourly bars per symbol (minimum ~7 trading days) for feature computation.
+- **Market hours only:** No pre-market or after-hours data. 7 hourly bars per trading day (9:30 AM – 4:00 PM ET).
+- **Yahoo Finance rate limits:** Refresh endpoint batches requests with delays for 421+ tickers.
+- **Predictions are informational** — not financial advice.
+- **No authentication** on API endpoints — designed for internal/local use.
+- **Reproducibility:** All models use `random_state=42`. Results are deterministic given the same data.
+- **Memory:** Full training pipeline requires ~5 GB RAM (362K rows × 49 features × 3 models).
+
+---
+
+## 17. Version History
+
+| Version | Key Changes | 3%/10d Hit Rate |
+|---|---|---|
+| v1 | Baseline: single XGBoost, 43 features, random CV | — |
+| v2 | Dropped dead features, added MACD/BB/Stochastic | — |
+| v3 | Ensemble (3 models), walk-forward CV, Sharpe selection, market regime | 71.6% |
+| v4 | Parallel training (ProcessPool) & backtest (ThreadPool) | 71.6% |
+| v5 | Adaptive stops, overextension filter, momentum decel, sector diversity | **71.6%** (10%: +8.9pp) |
