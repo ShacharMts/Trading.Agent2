@@ -22,3 +22,25 @@ Add calendar features — day-of-week, week-of-month (Week 9 collapse pattern)
 Add relative strength — stock return vs SPY/VOO return (sector-relative momentum)
 Improve diversity in scoring — penalize symbols that are over-concentrated in recommendations
 Use walk-forward training — retrain the model on a rolling window instead of training on all data up-front, prevents lookahead bias
+
+
+
+1. Strip candlestick.py down to only the 2 patterns that had non-zero importance (three_white_soldiers, three_black_crows), plus add a composite candlestick score.
+
+2. Add momentum features to a new file.
+
+3. Update moving_average.py to remove dead crossover signals.
+
+4. Add calendar and relative strength features to pipeline.
+
+Now let me add a diversity penalty to the predictor scoring. I need to read the current scoring section:
+
+Now I'll add a diversity penalty — after computing scores, but before selecting top-N, I'll use a greedy selection that penalizes symbols from the same category:
+
+
+Now implement walk-forward training in the trainer. Instead of a single 80/20 split, use multiple rolling windows:
+
+All 6 improvements are coded. Now let's retrain the model:
+
+Model retrained. Now let's run the February backtest with the improved model. I need to update the backtest script to handle the new feature set (fillna for NaN features in early dates):
+

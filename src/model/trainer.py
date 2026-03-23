@@ -123,11 +123,74 @@ def time_based_split(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.DataFrame]:
     return train, test
 
 
+def walk_forward_evaluate(
+    clean_df: pd.DataFrame,
+    feature_cols: list[str],
+    model_name: str,
+    n_folds: int = 3,
+) -> dict:
+    """Walk-forward cross-validation: train on expanding window, test on next fold.
+
+    Returns averaged metrics across folds.
+    """
+    from src.model.evaluator import full_evaluation
+
+    # Sort by DateTime globally
+    clean_df = clean_df.sort_values("DateTime").reset_index(drop=True)
+    total = len(clean_df)
+    fold_size = total // (n_folds + 1)  # reserve 1 fold for initial training
+
+    all_auc = []
+    all_precision = []
+    all_backtest_roi = []
+    all_sharpe = []
+
+    for fold in range(n_folds):
+        train_end = fold_size * (fold + 1)  # expanding window
+        test_start = train_end
+        test_end = min(test_start + fold_size, total)
+
+        if test_end <= test_start:
+            break
+
+        train_data = clean_df.iloc[:train_end]
+        test_data = clean_df.iloc[test_start:test_end]
+
+        X_train = train_data[feature_cols].values
+        y_train = train_data["target_buy"].values.astype(int)
+        X_test = test_data[feature_cols].values
+        y_test = test_data["target_buy"].values.astype(int)
+
+        scaler = StandardScaler()
+        X_train_s = scaler.fit_transform(X_train)
+        X_test_s = scaler.transform(X_test)
+
+        model = get_candidate_models()[model_name]
+        model.fit(X_train_s, y_train)
+
+        y_proba = model.predict_proba(X_test_s)[:, 1]
+        y_pred = (y_proba >= 0.5).astype(int)
+
+        ev = full_evaluation(y_test, y_pred, y_proba, test_data, model_name)
+        all_auc.append(ev["auc_roc"])
+        all_precision.append(ev["precision"])
+        all_backtest_roi.append(ev["backtest"]["avg_return_pct"])
+        all_sharpe.append(ev["backtest"]["sharpe_ratio"])
+
+    return {
+        "wf_avg_auc": np.mean(all_auc) if all_auc else 0,
+        "wf_avg_precision": np.mean(all_precision) if all_precision else 0,
+        "wf_avg_roi": np.mean(all_backtest_roi) if all_backtest_roi else 0,
+        "wf_avg_sharpe": np.mean(all_sharpe) if all_sharpe else 0,
+        "wf_folds": len(all_auc),
+    }
+
+
 def train_and_evaluate(
     period_days: int = DEFAULT_PERIOD_DAYS,
     profit_threshold: float = DEFAULT_PROFIT_THRESHOLD,
 ) -> dict:
-    """Train all candidate models, evaluate, and save the best.
+    """Train all candidate models, evaluate with walk-forward CV, and save the best.
 
     Returns:
         Summary dict with results for all models.
@@ -165,6 +228,14 @@ def train_and_evaluate(
         evaluation = full_evaluation(y_test, y_pred, y_proba, test_df, name)
         evaluation["train_time_sec"] = round(train_time, 1)
 
+        # Walk-forward cross-validation
+        print(f"  Running walk-forward CV (3 folds)...")
+        wf = walk_forward_evaluate(clean_df, feature_cols, name, n_folds=3)
+        evaluation["walk_forward"] = wf
+        print(f"  WF Avg AUC:       {wf['wf_avg_auc']:.4f}")
+        print(f"  WF Avg ROI:       {wf['wf_avg_roi']:.2f}%")
+        print(f"  WF Avg Sharpe:    {wf['wf_avg_sharpe']:.3f}")
+
         results.append(evaluation)
 
         print(f"  AUC-ROC:          {evaluation['auc_roc']:.4f}")
@@ -177,12 +248,12 @@ def train_and_evaluate(
         print(f"  Backtest avg ROI: {evaluation['backtest']['avg_return_pct']:.2f}%")
         print(f"  Backtest Sharpe:  {evaluation['backtest']['sharpe_ratio']:.3f}")
 
-    # Select best model by AUC-ROC
-    results.sort(key=lambda r: r["auc_roc"], reverse=True)
+    # Select best model by walk-forward average AUC (more robust than single-split AUC)
+    results.sort(key=lambda r: r["walk_forward"]["wf_avg_auc"], reverse=True)
     best = results[0]
     best_name = best["model_name"]
     print(f"\n{'='*60}")
-    print(f"BEST MODEL: {best_name} (AUC-ROC = {best['auc_roc']:.4f})")
+    print(f"BEST MODEL: {best_name} (WF Avg AUC = {best['walk_forward']['wf_avg_auc']:.4f})")
     print(f"{'='*60}")
 
     # Retrain best on full data (train + test) for production
@@ -202,7 +273,7 @@ def train_and_evaluate(
 
     metadata = {
         "model_type": best_name,
-        "model_version": f"{best_name}_v1_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
+        "model_version": f"{best_name}_v2_{datetime.now(timezone.utc).strftime('%Y%m%d')}",
         "trained_at": datetime.now(timezone.utc).isoformat(),
         "period_days": period_days,
         "profit_threshold": profit_threshold,

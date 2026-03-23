@@ -200,8 +200,32 @@ class Predictor:
         else:
             latest_df["est_stop_loss"] = latest_df["Close"] * 0.97
 
-        # Sort by combined_score descending, take top-N
-        top = latest_df.nlargest(num_stocks, "combined_score")
+        # Sort by combined_score descending, take top-N with diversity penalty
+        latest_df = latest_df.sort_values("combined_score", ascending=False).reset_index(drop=True)
+
+        # Greedy diverse selection: penalize repeats from same category
+        selected_indices = []
+        category_counts = {}
+        for idx, row in latest_df.iterrows():
+            if len(selected_indices) >= num_stocks:
+                break
+            cat = row.get("category", "unknown")
+            count = category_counts.get(cat, 0)
+            # Apply diminishing score for over-represented categories
+            penalty = 0.85 ** count  # each repeat from same category gets 15% discount
+            adj_score = row["combined_score"] * penalty
+            # Accept if adjusted score is still competitive
+            if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.7:
+                selected_indices.append(idx)
+                category_counts[cat] = count + 1
+
+        # If diversity filtering was too strict, fill remaining slots
+        if len(selected_indices) < num_stocks:
+            remaining = latest_df[~latest_df.index.isin(selected_indices)]
+            needed = num_stocks - len(selected_indices)
+            selected_indices.extend(remaining.head(needed).index.tolist())
+
+        top = latest_df.loc[selected_indices]
 
         recommendations = []
         for _, row in top.iterrows():
