@@ -182,12 +182,28 @@ class Predictor:
             else:
                 gain_ratio = 1.0
 
-            # Combined score: 40% model confidence + 30% historical success rate + 30% gain feasibility
+            # Overextension penalty: if stock already ran up big in last 5d, penalize
+            returns_5d = row.get("returns_5d", 0.0)
+            if pd.notna(returns_5d) and returns_5d > expected_profit_pct:
+                # Already moved more than the target — likely overextended
+                overext_penalty = max(0.5, 1.0 - (returns_5d - expected_profit_pct) / 20.0)
+            else:
+                overext_penalty = 1.0
+
+            # Momentum deceleration penalty
+            momentum_decel = row.get("momentum_decel", 0.0)
+            if pd.notna(momentum_decel) and momentum_decel < -3.0:
+                # Momentum decelerating hard — reduce confidence
+                decel_penalty = max(0.7, 1.0 + momentum_decel / 30.0)
+            else:
+                decel_penalty = 1.0
+
+            # Combined score: 40% model + 30% historical + 30% feasibility, with penalties
             combined = (
                 0.40 * model_conf
                 + 0.30 * (hist_pct / 100.0)
                 + 0.30 * min(gain_ratio, 1.0)
-            )
+            ) * overext_penalty * decel_penalty
             feasibility_scores.append(combined)
 
         latest_df["combined_score"] = feasibility_scores
@@ -204,7 +220,16 @@ class Predictor:
         latest_df["est_target_price"] = latest_df["Close"] * (1 + latest_df["est_return"] / 100)
 
         if "atr_14" in latest_df.columns:
-            latest_df["est_stop_loss"] = latest_df["Close"] - 2 * latest_df["atr_14"]
+            # Adaptive stop-loss: wider for high-vol, tighter for low-vol
+            atr = latest_df["atr_14"]
+            atr_pct = atr / latest_df["Close"]
+            median_atr_pct = atr_pct.median()
+            multiplier = np.where(
+                atr_pct > median_atr_pct,
+                np.clip(2.0 + (atr_pct - median_atr_pct) / median_atr_pct, 2.0, 3.0),
+                np.clip(2.0 - (median_atr_pct - atr_pct) / median_atr_pct * 0.5, 1.5, 2.0),
+            )
+            latest_df["est_stop_loss"] = latest_df["Close"] - multiplier * atr
         else:
             latest_df["est_stop_loss"] = latest_df["Close"] * 0.97
 
@@ -212,18 +237,22 @@ class Predictor:
         latest_df = latest_df.sort_values("combined_score", ascending=False).reset_index(drop=True)
 
         # Greedy diverse selection: penalize repeats from same category
+        # Hard cap: max 3 picks per category to avoid concentration
         selected_indices = []
         category_counts = {}
+        max_per_category = 3
         for idx, row in latest_df.iterrows():
             if len(selected_indices) >= num_stocks:
                 break
             cat = row.get("category", "unknown")
             count = category_counts.get(cat, 0)
+            if count >= max_per_category:
+                continue  # hard cap reached for this category
             # Apply diminishing score for over-represented categories
-            penalty = 0.85 ** count  # each repeat from same category gets 15% discount
+            penalty = 0.80 ** count  # each repeat from same category gets 20% discount
             adj_score = row["combined_score"] * penalty
             # Accept if adjusted score is still competitive
-            if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.7:
+            if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.6:
                 selected_indices.append(idx)
                 category_counts[cat] = count + 1
 

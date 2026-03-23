@@ -22,7 +22,7 @@ def _add_calendar_features(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series, market_regime: pd.Series) -> pd.DataFrame:
+def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series, market_regime: pd.Series, sector_returns: pd.Series | None = None) -> pd.DataFrame:
     """Add stock return relative to market (VOO) return and market regime."""
     # Per-bar return of the stock
     stock_return = df["Close"].pct_change() * 100
@@ -33,6 +33,15 @@ def _add_relative_strength(df: pd.DataFrame, market_returns: pd.Series, market_r
     df["relative_strength_20"] = df["relative_strength"].rolling(window=20, min_periods=5).mean()
     # Market regime: rolling 20-bar return of VOO (positive = uptrend, negative = downtrend)
     df["market_regime"] = df["DateTime"].map(market_regime).fillna(0)
+    # Sector relative strength (vs category average)
+    if sector_returns is not None:
+        df["sector_return"] = df["DateTime"].map(sector_returns).fillna(0)
+        df["vs_sector"] = stock_return - df["sector_return"]
+        df["vs_sector_20"] = df["vs_sector"].rolling(window=20, min_periods=5).mean()
+    else:
+        df["sector_return"] = 0.0
+        df["vs_sector"] = 0.0
+        df["vs_sector_20"] = 0.0
     return df
 
 
@@ -56,10 +65,27 @@ def _compute_market_returns(data: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     return voo_returns, voo_regime
 
 
+def _compute_sector_returns(data: pd.DataFrame) -> dict[str, pd.Series]:
+    """Compute per-bar average returns by category (sector proxy).
+
+    Returns dict of category -> returns Series indexed by DateTime.
+    """
+    sector_returns = {}
+    for cat in data["category"].unique():
+        cat_data = data[data["category"] == cat].copy()
+        cat_data = cat_data.sort_values("DateTime")
+        # Average close per DateTime across all symbols in this category
+        avg_close = cat_data.groupby("DateTime")["Close"].mean().sort_index()
+        returns = avg_close.pct_change() * 100
+        sector_returns[cat] = returns
+    return sector_returns
+
+
 def engineer_features_for_symbol(
     symbol_df: pd.DataFrame,
     market_returns: pd.Series,
     market_regime: pd.Series,
+    sector_returns: pd.Series | None = None,
 ) -> pd.DataFrame:
     """Apply all feature engineering to a single symbol's data."""
     df = symbol_df.copy()
@@ -72,7 +98,7 @@ def engineer_features_for_symbol(
     df = add_price_action_features(df)
     df = add_momentum_features(df)
     df = _add_calendar_features(df)
-    df = _add_relative_strength(df, market_returns, market_regime)
+    df = _add_relative_strength(df, market_returns, market_regime, sector_returns)
 
     # Encode direction as numeric
     df["direction_num"] = (df["Direction"] == "BULLISH").astype(int)
@@ -94,6 +120,7 @@ def engineer_features(data: pd.DataFrame) -> pd.DataFrame:
     """
     # Pre-compute market returns and regime once for relative strength
     market_returns, market_regime = _compute_market_returns(data)
+    sector_returns_map = _compute_sector_returns(data)
 
     symbols = data["Symbol"].unique()
     frames = []
@@ -102,7 +129,9 @@ def engineer_features(data: pd.DataFrame) -> pd.DataFrame:
         symbol_data = data[data["Symbol"] == symbol].copy()
         if len(symbol_data) < 50:
             continue
-        featured = engineer_features_for_symbol(symbol_data, market_returns, market_regime)
+        cat = symbol_data["category"].iloc[0] if "category" in symbol_data.columns else None
+        sector_ret = sector_returns_map.get(cat) if cat else None
+        featured = engineer_features_for_symbol(symbol_data, market_returns, market_regime, sector_ret)
         frames.append(featured)
 
     if not frames:
@@ -118,6 +147,7 @@ def get_feature_columns(df: pd.DataFrame) -> list[str]:
         "Symbol", "DateTime", "Open", "High", "Low", "Close", "Volume",
         "Body", "UpperShadow", "LowerShadow", "Direction", "category",
         "market_return",  # intermediate col, not a direct feature
+        "sector_return",  # intermediate col, not a direct feature
         # Target columns (added later)
         "future_return", "target_buy", "optimal_hold_days",
         "target_price", "stop_loss", "future_max_close", "future_min_low",

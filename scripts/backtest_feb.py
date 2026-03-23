@@ -145,7 +145,7 @@ def predict_as_of(
         proba = model.predict_proba(X_scaled)[:, 1]
     latest_df["buy_probability"] = proba
 
-    # Feasibility-adjusted scoring
+    # Feasibility-adjusted scoring with overextension penalty
     feasibility_scores = []
     for _, row in latest_df.iterrows():
         symbol = row["Symbol"]
@@ -159,11 +159,25 @@ def predict_as_of(
         else:
             gain_ratio = 1.0
 
+        # Overextension penalty: if stock already ran up big in last 5d, penalize
+        returns_5d = row.get("returns_5d", 0.0)
+        if pd.notna(returns_5d) and returns_5d > expected_profit_pct:
+            overext_penalty = max(0.5, 1.0 - (returns_5d - expected_profit_pct) / 20.0)
+        else:
+            overext_penalty = 1.0
+
+        # Momentum deceleration penalty
+        momentum_decel = row.get("momentum_decel", 0.0)
+        if pd.notna(momentum_decel) and momentum_decel < -3.0:
+            decel_penalty = max(0.7, 1.0 + momentum_decel / 30.0)
+        else:
+            decel_penalty = 1.0
+
         combined = (
             0.40 * model_conf
             + 0.30 * (hist_pct / 100.0)
             + 0.30 * min(gain_ratio, 1.0)
-        )
+        ) * overext_penalty * decel_penalty
         feasibility_scores.append(combined)
 
     latest_df["combined_score"] = feasibility_scores
@@ -176,11 +190,44 @@ def predict_as_of(
     latest_df["est_target_price"] = latest_df["Close"] * (1 + latest_df["est_return"] / 100)
 
     if "atr_14" in latest_df.columns:
-        latest_df["est_stop_loss"] = latest_df["Close"] - 2 * latest_df["atr_14"]
+        # Adaptive stop-loss: wider for high-vol, tighter for low-vol
+        atr = latest_df["atr_14"]
+        atr_pct = atr / latest_df["Close"]
+        median_atr_pct = atr_pct.median()
+        multiplier = np.where(
+            atr_pct > median_atr_pct,
+            np.clip(2.0 + (atr_pct - median_atr_pct) / median_atr_pct, 2.0, 3.0),
+            np.clip(2.0 - (median_atr_pct - atr_pct) / median_atr_pct * 0.5, 1.5, 2.0),
+        )
+        latest_df["est_stop_loss"] = latest_df["Close"] - multiplier * atr
     else:
         latest_df["est_stop_loss"] = latest_df["Close"] * 0.97
 
-    top = latest_df.nlargest(num_stocks, "combined_score")
+    # Diverse selection: sort by score, apply category hard cap (max 3 per category)
+    latest_df = latest_df.sort_values("combined_score", ascending=False).reset_index(drop=True)
+    selected_indices = []
+    category_counts = {}
+    max_per_category = 3
+    for idx, row in latest_df.iterrows():
+        if len(selected_indices) >= num_stocks:
+            break
+        cat = row.get("category", "unknown")
+        count = category_counts.get(cat, 0)
+        if count >= max_per_category:
+            continue
+        penalty = 0.80 ** count
+        adj_score = row["combined_score"] * penalty
+        if len(selected_indices) == 0 or adj_score >= latest_df.loc[selected_indices[-1], "combined_score"] * 0.6:
+            selected_indices.append(idx)
+            category_counts[cat] = count + 1
+
+    # Fill remaining if diversity was too strict
+    if len(selected_indices) < num_stocks:
+        remaining = latest_df[~latest_df.index.isin(selected_indices)]
+        needed = num_stocks - len(selected_indices)
+        selected_indices.extend(remaining.head(needed).index.tolist())
+
+    top = latest_df.loc[selected_indices]
 
     results = []
     for _, row in top.iterrows():

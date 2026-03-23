@@ -107,3 +107,40 @@ Now I understand the structure. The backtest runs 4 scenarios × ~19 Feb trading
 Done. The backtest now runs all 4 scenarios in parallel using ThreadPoolExecutor(max_workers=4). Each thread processes its scenario's 19 Feb trading days independently, sharing the raw data in memory (no serialization overhead). This should give roughly a 4x speedup since each scenario no longer waits for the others.
 
 The training (trainer.py) was already parallelized with ProcessPoolExecutor for the 3 models. Want me to run the backtest to verify?
+
+
+
+-----------
+
+Current State: v4 Baseline
+Metric	Value
+Best AUC-ROC	0.6056 (XGBoost)
+Hit Rate (3%/10d)	71.6%
+Stopped Out	13.2% (25/190)
+Unique Symbols Picked	Only 31 out of 421
+Top 7 Symbols	51% of all picks
+Top 6 Improvements (by expected impact)
+1. Late-Month Collapse Filter (HIGH IMPACT)
+Hit rate drops from 80-100% (Feb 2-20) to 30-50% (Feb 23-27). The model keeps recommending the same symbols even as market conditions reverse. Fix: Add a short-term momentum gate — skip recommendations when a symbol's 5-day return is already > target profit (overextended), or when market regime flips bearish mid-month.
+
+2. Adaptive Stop-Loss (HIGH IMPACT)
+26% of trades get stopped out. The current fixed Close - 2×ATR stop is too tight for volatile stocks. Fix: Use per-symbol volatility-adjusted stops (e.g., wider stops for high-ATR symbols, tighter for low-vol). Also consider trailing stops instead of fixed stops.
+
+3. Confidence Calibration / Threshold Tuning (MEDIUM-HIGH)
+The model uses a flat 0.5 probability threshold. Most picks score 75-89 with little differentiation. Fix: Use Platt scaling or isotonic regression to calibrate probabilities, then raise the threshold (e.g., 0.6) to be more selective — fewer picks but higher quality.
+
+4. Temporal Features (MEDIUM)
+The model has day_of_week and week_of_month but no features capturing recent regime shifts. Fix: Add features like:
+
+5-day momentum reversal (was the stock up big recently, now rolling over?)
+Sector rotation signal (is the stock's sector gaining or losing vs SPY/VOO?)
+Earnings proximity (stocks near earnings dates are more volatile)
+Gap features (overnight gap up/down relative to ATR)
+5. Better Diversity Scoring (MEDIUM)
+Current diversity penalty (0.85^count) is weak — 7 stocks still dominate 51% of picks. Fix: Hard cap max 2 picks per sector, or use a min-correlation portfolio approach to ensure recommendations are diversified across sectors, not just categories.
+
+6. Feature Selection / Regularization (LOWER)
+43 features with AUC only 0.61 suggests noise. The WF Sharpe (3.46) vs backtest Sharpe (1.59) gap of 2.2x hints at overfitting. Fix: Use SHAP-based feature importance to drop low-value features, or add stronger L1/L2 regularization. Target ~25-30 high-signal features.
+
+Recommended Priority
+I'd start with #1 + #2 together (late-month filter + adaptive stops) — these directly address the two biggest loss sources (late-month collapse causes ~40% of misses, tight stops cause 26% of losses). Together they could push the 3%/10d hit rate from 71.6% toward 77-80%.

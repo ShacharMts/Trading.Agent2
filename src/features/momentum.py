@@ -36,5 +36,21 @@ def add_momentum_features(df: pd.DataFrame) -> pd.DataFrame:
     # ── Multi-day returns (using HOURLY_BARS_PER_DAY=7) ──
     df["returns_3d"] = close.pct_change(periods=21) * 100   # 3 days * 7 bars
     df["returns_5d"] = close.pct_change(periods=35) * 100   # 5 days * 7 bars
+    df["returns_10d"] = close.pct_change(periods=70) * 100  # 10 days * 7 bars
+
+    # ── Overextension detector ──
+    # How far above the 20-bar SMA is the price? High values = overextended
+    sma_20_val = close.rolling(window=20, min_periods=10).mean()
+    df["overextension"] = (close - sma_20_val) / sma_20_val * 100
+
+    # ── Momentum reversal signal ──
+    # 5d return minus 3d return: negative = decelerating momentum
+    df["momentum_decel"] = df["returns_3d"] - df["returns_5d"]
+
+    # ── Gap feature ──
+    # Overnight gap: open vs previous close (relative to ATR)
+    prev_close = close.shift(1)
+    gap = (df["Open"] - prev_close) / prev_close * 100
+    df["gap_pct"] = gap
 
     return df

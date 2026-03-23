@@ -35,11 +35,17 @@
   "stoch_d",
   "returns_3d",
   "returns_5d",
+  "returns_10d",
+  "overextension",
+  "momentum_decel",
+  "gap_pct",
   "day_of_week",
   "week_of_month",
   "relative_strength",
   "relative_strength_20",
   "market_regime",
+  "vs_sector",
+  "vs_sector_20",
   "direction_num",
   "category_num"
 ]

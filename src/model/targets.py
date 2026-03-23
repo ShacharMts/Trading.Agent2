@@ -65,14 +65,25 @@ def add_targets(df: pd.DataFrame, period_days: int = 10, profit_threshold: float
     # Target price (the max close in the window)
     df["target_price"] = future_max_close
 
-    # Stop-loss: ATR-based (2x ATR below current close) or min low in window
+    # Stop-loss: volatility-adaptive
+    # High-ATR stocks get wider stops, low-ATR stocks get tighter stops
     if "atr_14" in df.columns:
-        atr_stop = df["Close"] - 2 * df["atr_14"]
+        # Dynamic multiplier: 2.5x for high-vol, 1.5x for low-vol
+        atr = df["atr_14"]
+        median_atr_pct = (atr / df["Close"]).median()
+        atr_pct = atr / df["Close"]
+        # Normalize: stocks with ATR% above median get wider stops (up to 3x),
+        # those below get tighter stops (down to 1.5x)
+        multiplier = np.where(
+            atr_pct > median_atr_pct,
+            np.clip(2.0 + (atr_pct - median_atr_pct) / median_atr_pct, 2.0, 3.0),
+            np.clip(2.0 - (median_atr_pct - atr_pct) / median_atr_pct * 0.5, 1.5, 2.0),
+        )
+        atr_stop = df["Close"] - multiplier * atr
         min_low_stop = future_min_low
-        # Use the tighter (higher) stop-loss
         df["stop_loss"] = np.where(
             pd.notna(df["atr_14"]),
-            np.maximum(atr_stop, min_low_stop * 0.99),  # slightly below min low
+            np.maximum(atr_stop, min_low_stop * 0.99),
             min_low_stop * 0.99,
         )
     else:
