@@ -7,7 +7,7 @@
   ],
   "best_single_model": "xgboost",
   "model_version": "ensemble_v3_20260323",
-  "trained_at": "2026-03-23T17:38:22.159690+00:00",
+  "trained_at": "2026-03-23T18:19:31.303880+00:00",
   "period_days": 10,
   "profit_threshold": 3.0,
   "train_rows": 362406,
@@ -30,7 +30,7 @@
       "sharpe_ratio": 1.586,
       "top_n": 20
     },
-    "train_time_sec": 3.1,
+    "train_time_sec": 10.5,
     "walk_forward": {
       "wf_avg_auc": 0.5958890626332957,
       "wf_avg_precision": 0.5397615372094032,
@@ -57,7 +57,7 @@
         "sharpe_ratio": 1.586,
         "top_n": 20
       },
-      "train_time_sec": 3.1,
+      "train_time_sec": 10.5,
       "walk_forward": {
         "wf_avg_auc": 0.5958890626332957,
         "wf_avg_precision": 0.5397615372094032,
@@ -83,7 +83,7 @@
         "sharpe_ratio": 2.156,
         "top_n": 20
       },
-      "train_time_sec": 5.6,
+      "train_time_sec": 14.0,
       "walk_forward": {
         "wf_avg_auc": 0.5973515483658337,
         "wf_avg_precision": 0.5360042400093087,
@@ -109,7 +109,7 @@
         "sharpe_ratio": 1.945,
         "top_n": 20
       },
-      "train_time_sec": 62.9,
+      "train_time_sec": 84.2,
       "walk_forward": {
         "wf_avg_auc": 0.596582908111265,
         "wf_avg_precision": 0.5362377235584489,

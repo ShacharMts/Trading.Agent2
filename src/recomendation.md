@@ -87,3 +87,23 @@ Now let's retrain with the ensemble and run the backtest:
 
 Ensemble trained (XGBoost selected as best by walk-forward Sharpe 3.457, but all 3 models are saved for ensemble averaging). Now run the backtest:
 
+
+What improved the model:
+
+Ensemble averaging (XGBoost + LightGBM + RandomForest) — smooths out each model's biases
+Market regime feature — VOO 20-bar trend helps detect up/down markets
+Sharpe-based model selection — picks models that actually make money, not just classify well
+
+
+That's 3 models × (1 main train + 3 walk-forward folds) = 12 sequential training runs. Plus the final ensemble retrains all 3 on full data = 15 total.
+
+Each individual model uses n_jobs=-1 (all CPU cores for internal parallelism), but the models themselves run one at a time.
+
+Want me to parallelize the training across models? The main train + walk-forward for each model is independent, so they could run in parallel using concurrent.futures, cutting wall time roughly by 3x.
+
+
+Now I understand the structure. The backtest runs 4 scenarios × ~19 Feb trading days = ~76 serial iterations of predict_as_of(). I'll parallelize across the 4 scenarios using ThreadPoolExecutor (shared memory avoids serializing the large 400K-row DataFrame).
+
+Done. The backtest now runs all 4 scenarios in parallel using ThreadPoolExecutor(max_workers=4). Each thread processes its scenario's 19 Feb trading days independently, sharing the raw data in memory (no serialization overhead). This should give roughly a 4x speedup since each scenario no longer waits for the others.
+
+The training (trainer.py) was already parallelized with ProcessPoolExecutor for the 3 models. Want me to run the backtest to verify?

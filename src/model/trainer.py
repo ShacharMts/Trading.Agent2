@@ -153,6 +153,7 @@ def walk_forward_evaluate(
         if test_end <= test_start:
             break
 
+        print(f"    [{model_name}] WF fold {fold+1}/{n_folds}: train={train_end} rows, test={test_end-test_start} rows")
         train_data = clean_df.iloc[:train_end]
         test_data = clean_df.iloc[test_start:test_end]
 
@@ -186,6 +187,48 @@ def walk_forward_evaluate(
     }
 
 
+def _train_single_model(
+    name: str,
+    X_train_scaled: np.ndarray,
+    y_train: np.ndarray,
+    X_test_scaled: np.ndarray,
+    y_test: np.ndarray,
+    test_df: pd.DataFrame,
+    clean_df: pd.DataFrame,
+    feature_cols: list[str],
+) -> dict:
+    """Train and evaluate a single model (designed to run in a subprocess)."""
+    model = get_candidate_models()[name]
+
+    print(f"  [{name}] Step 1/3: Training model...")
+    start = time.time()
+    model.fit(X_train_scaled, y_train)
+    train_time = time.time() - start
+    print(f"  [{name}] Step 1/3: Training done ({train_time:.1f}s)")
+
+    print(f"  [{name}] Step 2/3: Evaluating on test set...")
+    y_proba = model.predict_proba(X_test_scaled)[:, 1]
+    y_pred = (y_proba >= 0.5).astype(int)
+
+    evaluation = full_evaluation(y_test, y_pred, y_proba, test_df, name)
+    evaluation["train_time_sec"] = round(train_time, 1)
+    print(f"  [{name}] Step 2/3: Evaluation done (AUC={evaluation['auc_roc']:.4f})")
+
+    print(f"  [{name}] Step 3/3: Walk-forward CV (3 folds)...")
+    wf = walk_forward_evaluate(clean_df, feature_cols, name, n_folds=3)
+    evaluation["walk_forward"] = wf
+    print(f"  [{name}] Step 3/3: Walk-forward done (Sharpe={wf['wf_avg_sharpe']:.3f})")
+
+    return evaluation
+
+
+def _fit_model(name: str, X: np.ndarray, y: np.ndarray):
+    """Fit a single model on the full dataset (designed to run in a subprocess)."""
+    model = get_candidate_models()[name]
+    model.fit(X, y)
+    return model
+
+
 def train_and_evaluate(
     period_days: int = DEFAULT_PERIOD_DAYS,
     profit_threshold: float = DEFAULT_PROFIT_THRESHOLD,
@@ -195,6 +238,8 @@ def train_and_evaluate(
     Returns:
         Summary dict with results for all models.
     """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     clean_df, feature_cols = prepare_training_data(period_days, profit_threshold)
     train_df, test_df = time_based_split(clean_df)
 
@@ -210,43 +255,41 @@ def train_and_evaluate(
     X_train_scaled = scaler.fit_transform(X_train)
     X_test_scaled = scaler.transform(X_test)
 
-    candidates = get_candidate_models()
-    results = []
+    # Train and evaluate all models in parallel
+    candidates = list(get_candidate_models().keys())
+    print(f"\n{'='*60}")
+    print(f"Training {len(candidates)} models in parallel: {', '.join(candidates)}")
+    print(f"Each model: train -> evaluate -> walk-forward CV (3 folds)")
+    print(f"{'='*60}")
+    overall_start = time.time()
 
-    for name, model in candidates.items():
-        print(f"\n{'='*60}")
-        print(f"Training {name}...")
-        start = time.time()
-
-        model.fit(X_train_scaled, y_train)
-        train_time = time.time() - start
-        print(f"  Training time: {train_time:.1f}s")
-
-        y_proba = model.predict_proba(X_test_scaled)[:, 1]
-        y_pred = (y_proba >= 0.5).astype(int)
-
-        evaluation = full_evaluation(y_test, y_pred, y_proba, test_df, name)
-        evaluation["train_time_sec"] = round(train_time, 1)
-
-        # Walk-forward cross-validation
-        print(f"  Running walk-forward CV (3 folds)...")
-        wf = walk_forward_evaluate(clean_df, feature_cols, name, n_folds=3)
-        evaluation["walk_forward"] = wf
-        print(f"  WF Avg AUC:       {wf['wf_avg_auc']:.4f}")
-        print(f"  WF Avg ROI:       {wf['wf_avg_roi']:.2f}%")
-        print(f"  WF Avg Sharpe:    {wf['wf_avg_sharpe']:.3f}")
-
-        results.append(evaluation)
-
-        print(f"  AUC-ROC:          {evaluation['auc_roc']:.4f}")
-        print(f"  Accuracy:         {evaluation['accuracy']:.4f}")
-        print(f"  Precision:        {evaluation['precision']:.4f}")
-        print(f"  Recall:           {evaluation['recall']:.4f}")
-        print(f"  F1:               {evaluation['f1']:.4f}")
-        print(f"  Precision@10:     {evaluation['precision_at_10']:.3f}")
-        print(f"  Precision@20:     {evaluation['precision_at_20']:.3f}")
-        print(f"  Backtest avg ROI: {evaluation['backtest']['avg_return_pct']:.2f}%")
-        print(f"  Backtest Sharpe:  {evaluation['backtest']['sharpe_ratio']:.3f}")
+    with ProcessPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(
+                _train_single_model,
+                name, X_train_scaled, y_train, X_test_scaled, y_test,
+                test_df, clean_df, feature_cols,
+            ): name
+            for name in candidates
+        }
+        results = []
+        for future in as_completed(futures):
+            name = futures[future]
+            evaluation = future.result()
+            results.append(evaluation)
+            elapsed = time.time() - overall_start
+            print(f"\n{'='*60}")
+            print(f"  [{len(results)}/{len(candidates)}] {name} completed ({elapsed:.0f}s elapsed):")
+            print(f"  Training time:    {evaluation['train_time_sec']}s")
+            print(f"  WF Avg AUC:       {evaluation['walk_forward']['wf_avg_auc']:.4f}")
+            print(f"  WF Avg ROI:       {evaluation['walk_forward']['wf_avg_roi']:.2f}%")
+            print(f"  WF Avg Sharpe:    {evaluation['walk_forward']['wf_avg_sharpe']:.3f}")
+            print(f"  AUC-ROC:          {evaluation['auc_roc']:.4f}")
+            print(f"  Precision:        {evaluation['precision']:.4f}")
+            print(f"  Precision@10:     {evaluation['precision_at_10']:.3f}")
+            print(f"  Precision@20:     {evaluation['precision_at_20']:.3f}")
+            print(f"  Backtest avg ROI: {evaluation['backtest']['avg_return_pct']:.2f}%")
+            print(f"  Backtest Sharpe:  {evaluation['backtest']['sharpe_ratio']:.3f}")
 
     # Select best model by walk-forward Sharpe (practical profitability, not just AUC)
     results.sort(key=lambda r: r["walk_forward"]["wf_avg_sharpe"], reverse=True)
@@ -256,16 +299,25 @@ def train_and_evaluate(
     print(f"BEST MODEL: {best_name} (WF Avg Sharpe = {best['walk_forward']['wf_avg_sharpe']:.3f})")
     print(f"{'='*60}")
 
-    # Train ALL models on full data for ensemble
-    print(f"\nTraining ensemble (all 3 models) on full dataset for production...")
+    # Train ALL models on full data for ensemble (parallel)
+    print(f"\nPhase 2: Training ensemble (all {len(candidates)} models) on full dataset...")
+    ensemble_start = time.time()
     X_full = scaler.fit_transform(clean_df[feature_cols].values)
     y_full = clean_df["target_buy"].values.astype(int)
 
-    ensemble_models = {}
-    for name in get_candidate_models():
-        m = get_candidate_models()[name]
-        m.fit(X_full, y_full)
-        ensemble_models[name] = m
+    with ProcessPoolExecutor(max_workers=3) as executor:
+        futures = {
+            executor.submit(_fit_model, name, X_full, y_full): name
+            for name in candidates
+        }
+        ensemble_models = {}
+        done_count = 0
+        for future in as_completed(futures):
+            name = futures[future]
+            ensemble_models[name] = future.result()
+            done_count += 1
+            print(f"  [{done_count}/{len(candidates)}] {name} trained on full data")
+    print(f"  Ensemble training done ({time.time() - ensemble_start:.0f}s)")
 
     # Save artifacts — save ensemble dict instead of single model
     MODELS_DIR.mkdir(exist_ok=True)

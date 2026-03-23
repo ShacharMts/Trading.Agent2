@@ -7,9 +7,15 @@ next 10 trading days.
 
 import json
 import datetime
+import sys
+import os
+import time
 import numpy as np
 import pandas as pd
 import joblib
+
+# Ensure project root is on the path
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from src.data.loader import load_all_data
 from src.features.pipeline import engineer_features, get_feature_columns
@@ -254,7 +260,71 @@ def lookup_future_prices(
     }
 
 
+def _process_single_day(scenario_key, pct, period, n, raw, model, scaler, feature_columns, buy_date, progress_counter=None):
+    """Process a single trading day for a scenario (designed to run in a thread)."""
+    recs = predict_as_of(
+        raw, model, scaler, feature_columns,
+        as_of_date=buy_date,
+        num_stocks=n,
+        expected_profit_pct=pct,
+        period_days=period,
+    )
+
+    if recs.empty:
+        return []
+
+    results = []
+    for _, rec in recs.iterrows():
+        future = lookup_future_prices(
+            raw, rec["Symbol"], buy_date, rec["Target"], rec["StopLoss"]
+        )
+
+        pnl_5d = None
+        pnl_10d = None
+        if future["price_5d"] is not None:
+            pnl_5d = round((future["price_5d"] - rec["Price"]) / rec["Price"] * 100, 2)
+        if future["price_10d"] is not None:
+            pnl_10d = round((future["price_10d"] - rec["Price"]) / rec["Price"] * 100, 2)
+
+        results.append({
+            "Scenario": scenario_key,
+            "TradingDate": buy_date,
+            "Symbol": rec["Symbol"],
+            "Price": rec["Price"],
+            "Score": rec["Score"],
+            "Target": rec["Target"],
+            "StopLoss": rec["StopLoss"],
+            "ExpProfit": rec["ExpProfit"],
+            "SMA20": rec["SMA20"],
+            "vsSMA20": rec["vsSMA20"],
+            "YTD": rec["YTD"],
+            "LastMonth": rec["Month"],
+            "Price5d": future["price_5d"],
+            "PnL5d": pnl_5d,
+            "Price10d": future["price_10d"],
+            "PnL10d": pnl_10d,
+            "MaxPrice10d": future["max_price_10d"],
+            "Status": future["status"],
+        })
+
+    day_hits = sum(1 for r in results if r["Status"] == "HIT TARGET")
+    if progress_counter is not None:
+        with progress_counter["lock"]:
+            progress_counter["done"] += 1
+            done = progress_counter["done"]
+            total = progress_counter["total"]
+            elapsed = time.time() - progress_counter["start"]
+            pct_done = done / total * 100
+            print(f"  [{done}/{total} ({pct_done:.0f}%) {elapsed:.0f}s] {scenario_key} | {buy_date}: {day_hits}/{len(results)} hit target")
+    else:
+        print(f"  [{scenario_key}] {buy_date}: {day_hits}/{len(results)} hit target")
+    return results
+
+
 def run_backtest():
+    import threading
+    from concurrent.futures import ThreadPoolExecutor, as_completed
+
     print("Loading model artifacts...")
     model, scaler, feature_columns = load_model_artifacts()
 
@@ -274,70 +344,60 @@ def run_backtest():
         {"profit": 10, "period": 10, "num_stocks": 10},
     ]
 
+    # Run all 4 scenarios × days = tasks, 20 at a time (5 days per scenario)
+    total_tasks = len(scenarios) * len(feb_days)
+    max_workers = len(scenarios) * 5  # 4 scenarios × 5 days = 20 threads
+    print(f"\n{'='*60}")
+    print(f"Running {total_tasks} tasks with {max_workers} parallel workers")
+    print(f"Scenarios: {', '.join(f'{s['profit']}%/{s['period']}d' for s in scenarios)}")
+    print(f"{'='*60}")
+
+    progress = {
+        "done": 0,
+        "total": total_tasks,
+        "start": time.time(),
+        "lock": threading.Lock(),
+    }
     all_results = []
 
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for scenario in scenarios:
+            pct = scenario["profit"]
+            period = scenario["period"]
+            n = scenario["num_stocks"]
+            scenario_key = f"{pct}%/{period}d"
+            for buy_date in feb_days:
+                future = executor.submit(
+                    _process_single_day,
+                    scenario_key, pct, period, n,
+                    raw, model, scaler, feature_columns, buy_date, progress,
+                )
+                futures[future] = (scenario_key, buy_date)
+
+        for future in as_completed(futures):
+            day_results = future.result()
+            all_results.extend(day_results)
+
+    total_elapsed = time.time() - progress["start"]
+    print(f"\n{'='*60}")
+    print(f"All {total_tasks} tasks completed in {total_elapsed:.0f}s")
+    print(f"{'='*60}")
+
+    # Print scenario summaries
+    results_df = pd.DataFrame(all_results)
     for scenario in scenarios:
         pct = scenario["profit"]
         period = scenario["period"]
-        n = scenario["num_stocks"]
+        key = f"{pct}%/{period}d"
+        sdf = results_df[results_df["Scenario"] == key] if not results_df.empty else pd.DataFrame()
+        hits = (sdf["Status"] == "HIT TARGET").sum() if not sdf.empty else 0
+        total = len(sdf)
+        rate = hits / total * 100 if total > 0 else 0
+        avg_pnl = sdf["PnL10d"].dropna().mean() if not sdf.empty else 0
+        print(f"  {key}:  {hits}/{total} hit target ({rate:.1f}%)  Avg 10d P&L: {avg_pnl:+.2f}%")
 
-        print(f"\n{'='*80}")
-        print(f"SCENARIO: {pct}% profit target / {period} trading days / top {n} stocks")
-        print(f"{'='*80}")
-
-        for buy_date in feb_days:
-            print(f"  Processing {buy_date}...", end=" ", flush=True)
-
-            recs = predict_as_of(
-                raw, model, scaler, feature_columns,
-                as_of_date=buy_date,
-                num_stocks=n,
-                expected_profit_pct=pct,
-                period_days=period,
-            )
-
-            if recs.empty:
-                print("no recommendations")
-                continue
-
-            for _, rec in recs.iterrows():
-                future = lookup_future_prices(
-                    raw, rec["Symbol"], buy_date, rec["Target"], rec["StopLoss"]
-                )
-
-                pnl_5d = None
-                pnl_10d = None
-                if future["price_5d"] is not None:
-                    pnl_5d = round((future["price_5d"] - rec["Price"]) / rec["Price"] * 100, 2)
-                if future["price_10d"] is not None:
-                    pnl_10d = round((future["price_10d"] - rec["Price"]) / rec["Price"] * 100, 2)
-
-                all_results.append({
-                    "Scenario": f"{pct}%/{period}d",
-                    "TradingDate": buy_date,
-                    "Symbol": rec["Symbol"],
-                    "Price": rec["Price"],
-                    "Score": rec["Score"],
-                    "Target": rec["Target"],
-                    "StopLoss": rec["StopLoss"],
-                    "ExpProfit": rec["ExpProfit"],
-                    "SMA20": rec["SMA20"],
-                    "vsSMA20": rec["vsSMA20"],
-                    "YTD": rec["YTD"],
-                    "LastMonth": rec["Month"],
-                    "Price5d": future["price_5d"],
-                    "PnL5d": pnl_5d,
-                    "Price10d": future["price_10d"],
-                    "PnL10d": pnl_10d,
-                    "MaxPrice10d": future["max_price_10d"],
-                    "Status": future["status"],
-                })
-
-            hits = sum(1 for r in all_results if r["TradingDate"] == buy_date and r["Scenario"] == f"{pct}%/{period}d" and r["Status"] == "HIT TARGET")
-            total = sum(1 for r in all_results if r["TradingDate"] == buy_date and r["Scenario"] == f"{pct}%/{period}d")
-            print(f"{hits}/{total} hit target")
-
-    return pd.DataFrame(all_results)
+    return results_df
 
 
 def generate_report(df: pd.DataFrame):
