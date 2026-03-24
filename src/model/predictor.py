@@ -15,6 +15,9 @@ from src.utils.config import (
     HOURLY_BARS_PER_DAY,
 )
 
+# v7: Hard blacklist — chronic losers that the model keeps recommending
+BLACKLIST = {"INTC", "MU", "LRCX", "NEM"}
+
 
 class Predictor:
     """Loads a trained model and generates stock recommendations."""
@@ -172,6 +175,12 @@ class Predictor:
         feasibility_scores = []
         for _, row in latest_df.iterrows():
             symbol = row["Symbol"]
+
+            # v7: Hard blacklist — skip chronic losers immediately
+            if symbol in BLACKLIST:
+                feasibility_scores.append(0.0)
+                continue
+
             vol_data = symbol_vol.get(symbol, {})
             model_conf = proba[row.name]  # 0-1
 
@@ -186,6 +195,15 @@ class Predictor:
             if hist_pct < min_feasibility:
                 feasibility_scores.append(0.0)
                 continue
+
+            # v7: ATR-based stop-out blocker — if ATR > target %, symbol too volatile
+            atr_val = row.get("atr_14", None)
+            close = row["Close"]
+            if atr_val is not None and pd.notna(atr_val) and close > 0:
+                atr_pct_of_price = atr_val / close * 100
+                if atr_pct_of_price > expected_profit_pct * 0.8:
+                    feasibility_scores.append(0.0)
+                    continue
 
             # Feasibility: how close is avg_max_gain to the requested profit?
             if expected_profit_pct > 0:
@@ -219,11 +237,17 @@ class Predictor:
                     # >5% above SMA-20 → overextended penalty
                     mean_rev_factor = 0.85
 
-            # v6 Priority 4: Expected profit cap — penalize unrealistic expectations
+            # v7: Above-SMA-20 gate — require higher quality for above-SMA picks
+            if sma_20 is not None and pd.notna(sma_20) and close > sma_20:
+                # Above SMA-20: only allow if strong historical feasibility
+                if hist_pct < 50.0:
+                    mean_rev_factor *= 0.75  # additional penalty for weak above-SMA
+
+            # v7: Stronger expected profit cap — tighter penalty
             est_ret = avg_gain * model_conf
-            max_reasonable = expected_profit_pct * 2.5
+            max_reasonable = expected_profit_pct * 2.0
             if est_ret > max_reasonable:
-                profit_cap_penalty = max(0.6, 1.0 - (est_ret - max_reasonable) / 30.0)
+                profit_cap_penalty = max(0.5, 1.0 - (est_ret - max_reasonable) / 20.0)
             else:
                 profit_cap_penalty = 1.0
 
