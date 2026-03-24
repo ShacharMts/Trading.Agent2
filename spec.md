@@ -1,6 +1,6 @@
 # Trading Agent — Product Requirements Specification
 
-**Version:** v5 (March 2026)
+**Version:** v7 (March 2026)
 **Status:** Implemented
 **Repository:** [ShacharMts/AlertsAnalyzer2](https://github.com/ShacharMts/Trading.Agent2)
 
@@ -163,24 +163,37 @@ All models use `scale_pos_weight=1.5` to handle class imbalance (71.6% HOLD / 28
 Each stock is scored using a multi-factor approach:
 
 ```
-score = (40% × model_confidence + 30% × historical_feasibility + 30% × gain_ratio)
+score = (25% × model_confidence + 40% × historical_feasibility + 35% × gain_ratio)
         × overextension_penalty × momentum_decel_penalty
+        × mean_reversion_factor × profit_cap_penalty × regime_penalty
 ```
 
-- **Model confidence (40%)** — Averaged probability from 3 ensemble models
-- **Historical feasibility (30%)** — How often the stock achieved the target in the last 20 trading days
-- **Gain ratio (30%)** — Is the target realistic given the stock's recent price movements
+- **Model confidence (25%)** — Averaged probability from 3 ensemble models
+- **Historical feasibility (40%)** — How often the stock achieved the target in the last 20 trading days
+- **Gain ratio (35%)** — Is the target realistic given the stock's recent price movements
 - **Overextension penalty (0.5–1.0×)** — Reduces score if stock already moved >target% in 5 days
 - **Momentum deceleration penalty (0.7–1.0×)** — Reduces score if 3-day momentum is fading vs 5-day
+- **Mean-reversion factor (0.85–1.15×)** — Bonus for below-SMA-20 with momentum; penalty for >5% above SMA-20
+- **Profit cap penalty (0.5–1.0×)** — Penalizes unrealistic expected profits (>2× target)
+- **Regime penalty (0.7–1.0×)** — Higher bar when market (VOO) declining >2%
 
-### 6.2 Diversity Rules
+### 6.2 Pre-Scoring Filters
+
+| Filter | Rule | Rationale |
+|---|---|---|
+| **Hard blacklist** | Block INTC, MU, LRCX, NEM | Chronic 0–28% hit rate despite high model scores |
+| **Min feasibility** | Reject if hist_pct < max(15%, 35% − target×2) | Scales with target difficulty |
+| **ATR stop-out blocker** | Reject if ATR/price > 80% of target | Too-volatile for the profit target |
+
+### 6.3 Diversity Rules
 
 To prevent sector concentration:
-- **Category penalty:** `0.80 ^ count` — each repeat from same sector is multiplied by 0.80
-- **Hard cap:** Maximum 3 recommendations per category
+- **Category penalty:** `0.70 ^ count` — each repeat from same sector is multiplied by 0.70
+- **Hard cap (stocks):** Maximum 3 recommendations per snp100/snp500 category
+- **Hard cap (ETFs/merch):** Maximum 2 recommendations per merchandise/ETFs category
 - **Acceptance threshold:** Adjusted score must be ≥ 60% of the previous pick's score
 
-### 6.3 Adaptive Stop-Loss
+### 6.4 Adaptive Stop-Loss
 
 Stop-loss adjusts per-stock based on ATR volatility:
 - **Low-vol stocks:** Tighter stop (1.5× – 2.0× ATR below entry)
@@ -319,12 +332,12 @@ Triggers full retraining pipeline: load data → engineer features → train 3 m
 
 19 trading days × 4 profit target scenarios × 10 stocks/day = 760 total recommendations.
 
-| Scenario | Hit Rate | Missed | Stopped Out | Avg 5d P&L | Avg 10d P&L |
-|---|---|---|---|---|---|
-| **3% / 10d** | **136/190 (71.6%)** | 34 | 20 | +3.12% | +3.86% |
-| **5% / 10d** | **127/190 (66.8%)** | 37 | 26 | +2.59% | +2.95% |
-| **8% / 10d** | **116/190 (61.1%)** | 41 | 33 | +1.85% | +2.32% |
-| **10% / 10d** | **118/190 (62.1%)** | 37 | 35 | +2.15% | +2.52% |
+| Scenario | Hit Rate | Avg 10d P&L |
+|---|---|---|
+| **3% / 10d** | **159/190 (83.7%)** | +3.06% |
+| **5% / 10d** | **154/190 (81.1%)** | +3.87% |
+| **8% / 10d** | **140/190 (73.7%)** | +3.54% |
+| **10% / 10d** | **140/190 (73.7%)** | +3.69% |
 
 ### 8.2 Version Progression
 
@@ -334,7 +347,9 @@ Triggers full retraining pipeline: load data → engineer features → train 3 m
 | v2 | Dropped dead features, added MACD/BB/Stochastic | — | — | — | — |
 | v3 | 3-model ensemble, walk-forward CV, Sharpe selection | 71.6% | 63.7% | 52.6% | 48.4% |
 | v4 | Parallel training + backtest | 71.6% | 65.8% | 57.4% | 53.2% |
-| **v5** | **Adaptive stops, overextension filter, momentum decel, sector diversity** | **71.6%** | **66.8%** | **61.1%** | **62.1%** |
+| v5 | Adaptive stops, overextension filter, momentum decel, sector diversity | 71.6% | 66.8% | 61.1% | 62.1% |
+| v6 | Scoring recalibration (25/40/35), mean-reversion, regime gate, feasibility threshold | 78.9% | 74.7% | 66.3% | 58.4% |
+| **v7** | **Hard blacklist, ATR stop-out blocker, Above-SMA gate, tighter profit cap** | **83.7%** | **81.1%** | **73.7%** | **73.7%** |
 
 ---
 

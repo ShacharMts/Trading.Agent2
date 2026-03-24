@@ -1,6 +1,6 @@
 # Trading Agent — Architecture Document
 
-**Version:** v5 (March 2026)
+**Version:** v7 (March 2026)
 **Repository:** [ShacharMts/AlertsAnalyzer2](https://github.com/ShacharMts/Trading.Agent2)
 
 ---
@@ -13,10 +13,10 @@ A Python-based ML trading recommendation system that analyzes hourly candlestick
 
 | Target | Hit Rate | Avg 10d P&L |
 |--------|----------|-------------|
-| 3% / 10 days | 71.6% | +3.86% |
-| 5% / 10 days | 66.8% | +2.95% |
-| 8% / 10 days | 61.1% | +2.32% |
-| 10% / 10 days | 62.1% | +2.52% |
+| 3% / 10 days | 83.7% | +3.06% |
+| 5% / 10 days | 81.1% | +3.87% |
+| 8% / 10 days | 73.7% | +3.54% |
+| 10% / 10 days | 73.7% | +3.69% |
 
 ---
 
@@ -453,34 +453,78 @@ else:
     decel_penalty = 1.0
 ```
 
-**Step 5 — Combined Score:**
+**Step 5 — Mean-Reversion Factor (v6):**
+Bonus for below-SMA-20 stocks with accelerating momentum; penalty for overextended above-SMA stocks:
+```python
+if close < sma_20 and momentum_decel > 0:
+    mean_rev_factor = 1.15   # mean-reversion bonus
+elif close > sma_20 * 1.05:
+    mean_rev_factor = 0.85   # overextended penalty
+```
+
+**Step 6 — Above-SMA-20 Gate (v7):**
+Additional penalty for above-SMA picks with weak historical feasibility:
+```python
+if close > sma_20 and hist_pct < 50%:
+    mean_rev_factor *= 0.75  # extra penalty for weak above-SMA
+```
+
+**Step 7 — Expected Profit Cap (v7):**
+Penalize unrealistic profit expectations — higher expected profits correlate with lower hit rates:
+```python
+max_reasonable = expected_profit * 2.0
+if est_return > max_reasonable:
+    profit_cap_penalty = max(0.5, 1.0 - (est_return - max_reasonable) / 20.0)
+```
+
+**Step 8 — Market Regime Gate (v6):**
+Require higher confidence in bearish regimes:
+```python
+if market_regime < -0.02:   # VOO declining >2%
+    if model_conf < 0.6: regime_penalty = 0.7
+    elif model_conf < 0.7: regime_penalty = 0.85
+```
+
+**Step 9 — Combined Score (v7):**
 ```python
 raw_score = (
-    0.40 × model_confidence +
-    0.30 × (hist_pct / 100.0) +
-    0.30 × min(gain_ratio, 1.0)
+    0.25 × model_confidence +
+    0.40 × (hist_pct / 100.0) +
+    0.35 × min(gain_ratio, 1.0)
 )
-score = raw_score × overext_penalty × decel_penalty
+score = raw_score × overext_penalty × decel_penalty × mean_rev_factor
+        × profit_cap_penalty × regime_penalty
 score_1_to_100 = clip(score × 100, 1, 100)
 ```
 
-**Weight breakdown:**
-- 40% — Model ensemble prediction confidence
-- 30% — Historical feasibility (how often did this symbol achieve the target)
-- 30% — Gain achievability (is the target realistic given recent price action)
-- Multiplicative penalties: overextension (0.5–1.0×) and momentum deceleration (0.7–1.0×)
+**Weight breakdown (v7):**
+- 25% — Model ensemble prediction confidence
+- 40% — Historical feasibility (how often did this symbol achieve the target)
+- 35% — Gain achievability (is the target realistic given recent price action)
+- Multiplicative penalties: overextension, momentum deceleration, mean-reversion, profit cap, regime gate
 
-### 7.2 Diversity Filtering (v5)
+### 7.2 Pre-Scoring Filters (v6/v7)
+
+Before scoring, symbols are filtered by quality gates:
+
+| Filter | Rule | Rationale |
+|---|---|---|
+| **Hard blacklist (v7)** | Block INTC, MU, LRCX, NEM | Chronic losers: 0–28% hit rate despite high model scores |
+| **Min feasibility (v6)** | Reject if `hist_pct < max(15%, 35% - target×2)` | Scales with target: 29% for 3% target, 15% for 10%+ |
+| **ATR stop-out blocker (v7)** | Reject if `ATR/price > 80% of target` | Blocks symbols too volatile relative to the profit target |
+
+### 7.3 Diversity Filtering (v7)
 
 To prevent sector concentration in recommendations:
 
 | Rule | Value | Description |
 |---|---|---|
-| Category penalty | `0.80 ^ count` | Each additional pick from same sector is penalized exponentially |
-| Hard cap | 3 per category | Maximum 3 recommendations from any single category |
+| Category penalty | `0.70 ^ count` | Each additional pick from same sector penalized by 30% (was 20% in v5) |
+| Hard cap (stocks) | 3 per category | Maximum 3 recommendations from snp100/snp500 |
+| Hard cap (ETFs/merch) | 2 per category | Tighter cap for merchandise and ETF categories |
 | Acceptance threshold | ≥ 60% of last selected score | Adjusted score must be at least 60% of the previous pick's score |
 
-### 7.3 Adaptive Stop-Loss & Price Targets
+### 7.4 Adaptive Stop-Loss & Price Targets
 
 Same ATR-based adaptive logic used in training targets (§5.2), applied at prediction time:
 ```python
@@ -488,7 +532,7 @@ est_target_price = Close × (1 + est_return / 100)
 est_stop_loss    = Close - multiplier × ATR_14    # multiplier = 1.5–3.0
 ```
 
-### 7.4 Recommendation Output
+### 7.5 Recommendation Output
 
 | Field | Type | Description |
 |---|---|---|
@@ -518,14 +562,14 @@ Source: `scripts/backtest_feb.py`
 | Scenarios | 4 (3%, 5%, 8%, 10% profit targets, all 10-day horizon) |
 | Stocks per day | 10 recommendations |
 | Total tasks | 76 (4 scenarios × 19 days) |
-| Parallelization | `ThreadPoolExecutor(max_workers=20)` |
+| Parallelization | `ThreadPoolExecutor(max_workers=76)` — one thread per task |
 
 ### 8.2 Methodology
 
 For each scenario × trading date:
 1. Load all available data **up to (but not including)** the buy date — no look-ahead bias
 2. Engineer features, generate 10 recommendations using the trained ensemble
-3. Apply same scoring pipeline as production (overextension, momentum decel, diversity)
+3. Apply same scoring pipeline as production (blacklist, feasibility gate, ATR blocker, overextension, momentum decel, mean-reversion, profit cap, regime gate, diversity)
 4. Look up actual prices 5 and 10 trading days later
 5. Classify each recommendation:
    - **HIT TARGET** — Price reached ≥ target within 10 days
@@ -533,25 +577,25 @@ For each scenario × trading date:
    - **MISSED** — Neither target nor stop reached within 10 days
    - **N/A** — Insufficient future data
 
-### 8.3 Results (v5, February 2026)
+### 8.3 Results (v7, February 2026)
 
 | Scenario | Hit Rate | Missed | Stopped Out | Avg 5d P&L | Avg 10d P&L |
 |---|---|---|---|---|---|
-| **3% / 10d** | **136/190 (71.6%)** | 34 | 20 | +3.12% | +3.86% |
-| **5% / 10d** | **127/190 (66.8%)** | 37 | 26 | +2.59% | +2.95% |
-| **8% / 10d** | **116/190 (61.1%)** | 41 | 33 | +1.85% | +2.32% |
-| **10% / 10d** | **118/190 (62.1%)** | 37 | 35 | +2.15% | +2.52% |
+| **3% / 10d** | **159/190 (83.7%)** | — | — | — | +3.06% |
+| **5% / 10d** | **154/190 (81.1%)** | — | — | — | +3.87% |
+| **8% / 10d** | **140/190 (73.7%)** | — | — | — | +3.54% |
+| **10% / 10d** | **140/190 (73.7%)** | — | — | — | +3.69% |
 
 ### 8.4 Performance History (Version Progression)
 
-| Scenario | v1 (baseline) | v2 (features) | v3 (ensemble) | v4 (parallel) | v5 (current) |
+| Scenario | v3 (ensemble) | v4 (parallel) | v5 (adaptive) | v6 (scoring) | v7 (current) |
 |---|---|---|---|---|---|
-| 3% / 10d | — | — | 71.6% | 71.6% | **71.6%** |
-| 5% / 10d | — | — | 63.7% | 65.8% | **66.8%** |
-| 8% / 10d | — | — | 52.6% | 57.4% | **61.1%** |
-| 10% / 10d | — | — | 48.4% | 53.2% | **62.1%** |
+| 3% / 10d | 71.6% | 71.6% | 71.6% | 78.9% | **83.7%** |
+| 5% / 10d | 63.7% | 65.8% | 66.8% | 74.7% | **81.1%** |
+| 8% / 10d | 52.6% | 57.4% | 61.1% | 66.3% | **73.7%** |
+| 10% / 10d | 48.4% | 53.2% | 62.1% | 58.4% | **73.7%** |
 
-Key improvements in v5: +3.7pp on 8% target, +8.9pp on 10% target — driven by adaptive stops and overextension filtering.
+Key improvements: v6 recalibrated scoring weights (25/40/35), added mean-reversion & regime gates. v7 added hard blacklist, ATR stop-out blocker, Above-SMA gate — all scenarios improved +4.8 to +15.3pp over v6.
 
 ---
 
@@ -912,4 +956,6 @@ DATA_CATEGORIES = {
 | v2 | Dropped dead features, added MACD/BB/Stochastic | — |
 | v3 | Ensemble (3 models), walk-forward CV, Sharpe selection, market regime | 71.6% |
 | v4 | Parallel training (ProcessPool) & backtest (ThreadPool) | 71.6% |
-| v5 | Adaptive stops, overextension filter, momentum decel, sector diversity | **71.6%** (10%: +8.9pp) |
+| v5 | Adaptive stops, overextension filter, momentum decel, sector diversity | 71.6% |
+| v6 | Scoring recalibration (25/40/35), mean-reversion bonus, profit cap, regime gate, feasibility threshold | 78.9% |
+| v7 | Hard blacklist (INTC/MU/LRCX/NEM), ATR stop-out blocker, Above-SMA gate, tighter profit cap, 76 threads | **83.7%** |

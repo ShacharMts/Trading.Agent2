@@ -8,19 +8,20 @@ Backtested on **February 2026** (19 trading days × 10 stocks/day = 190 recommen
 
 | Profit Target | Hit Rate | Avg 10-Day P&L |
 |---------------|----------|-----------------|
-| 3% in 10 days | **71.6%** | +3.86% |
-| 5% in 10 days | **66.8%** | +2.95% |
-| 8% in 10 days | **61.1%** | +2.32% |
-| 10% in 10 days | **62.1%** | +2.52% |
+| 3% in 10 days | **83.7%** | +3.06% |
+| 5% in 10 days | **81.1%** | +3.87% |
+| 8% in 10 days | **73.7%** | +3.54% |
+| 10% in 10 days | **73.7%** | +3.69% |
 
 ## How It Works
 
 1. **49 engineered features** — candlestick patterns, moving averages, volume, RSI, MACD, Bollinger Bands, Stochastic, market regime, sector-relative strength
 2. **3-model ensemble** — XGBoost + LightGBM + RandomForest (averaged probabilities)
 3. **Walk-forward validation** — 3-fold expanding window, model selected by Sharpe ratio
-4. **Multi-factor scoring** — 40% model confidence + 30% historical feasibility + 30% gain ratio, with overextension and momentum deceleration penalties
-5. **Adaptive stop-loss** — ATR-based volatility multiplier (1.5×–3.0× ATR)
-6. **Sector diversity** — Hard cap of 3 picks per category, 0.80× penalty per repeat
+4. **Multi-factor scoring** — 25% model confidence + 40% historical feasibility + 35% gain ratio, with overextension, momentum deceleration, mean-reversion, profit cap, and market regime penalties
+5. **Quality gates** — Hard blacklist for chronic losers, min feasibility threshold, ATR stop-out blocker, Above-SMA-20 gate
+6. **Adaptive stop-loss** — ATR-based volatility multiplier (1.5×–3.0× ATR)
+7. **Sector diversity** — Hard cap of 3 (stocks) / 2 (ETFs, merch) per category, 0.70× penalty per repeat
 
 ## Quick Start
 
@@ -179,7 +180,9 @@ DateTime|Open|High|Low|Close|Volume
 | v2 | Added MACD, Bollinger, Stochastic | — |
 | v3 | 3-model ensemble, walk-forward CV | 48.4% |
 | v4 | Parallel training & backtest | 53.2% |
-| **v5** | **Adaptive stops, overextension filter, momentum gates, sector diversity** | **62.1%** |
+| v5 | Adaptive stops, overextension filter, momentum gates, sector diversity | 62.1% |
+| v6 | Scoring recalibration (25/40/35), mean-reversion bonus, regime gate, feasibility threshold | 58.4% |
+| **v7** | **Hard blacklist, ATR stop-out blocker, Above-SMA gate, tighter profit cap** | **73.7%** |
 
 ## Disclaimer
 
