@@ -1,8 +1,12 @@
-"""Backtest predictions for every February 2026 trading day.
+"""Backtest predictions for every trading day in a given month.
 
-For each trading day in Feb, generates recommendations using data
+For each trading day, generates recommendations using data
 available up to that date, then checks actual performance over the
 next 10 trading days.
+
+Usage:
+    python scripts/backtest_feb.py              # February 2026 (default)
+    python scripts/backtest_feb.py --month 3    # March 2026
 """
 
 import json
@@ -434,9 +438,14 @@ def _process_single_day(scenario_key, pct, period, n, raw, model, scaler, featur
     return results
 
 
-def run_backtest():
+def run_backtest(month=2):
     import threading
     from concurrent.futures import ThreadPoolExecutor, as_completed
+
+    month_names = {1: "January", 2: "February", 3: "March", 4: "April",
+                   5: "May", 6: "June", 7: "July", 8: "August",
+                   9: "September", 10: "October", 11: "November", 12: "December"}
+    month_name = month_names.get(month, f"Month-{month}")
 
     print("Loading model artifacts...")
     model, scaler, feature_columns = load_model_artifacts()
@@ -445,9 +454,11 @@ def run_backtest():
     raw = load_all_data()
     all_trading_days = get_trading_days(raw)
 
-    # February 2026 trading days
-    feb_days = [d for d in all_trading_days if d.year == 2026 and d.month == 2]
-    print(f"February 2026 trading days: {len(feb_days)}")
+    # Get trading days for the requested month
+    test_days = [d for d in all_trading_days if d.year == 2026 and d.month == month]
+    # Only keep days with at least 5 future trading days for meaningful evaluation
+    test_days = [d for d in test_days if len([x for x in all_trading_days if x > d]) >= 5]
+    print(f"{month_name} 2026 trading days (with ≥5 future days): {len(test_days)}")
 
     # Define test scenarios
     scenarios = [
@@ -458,8 +469,8 @@ def run_backtest():
     ]
 
     # Run all 4 scenarios × days = tasks, all in parallel
-    total_tasks = len(scenarios) * len(feb_days)
-    max_workers = total_tasks  # 76 threads — one per task for max parallelism
+    total_tasks = len(scenarios) * len(test_days)
+    max_workers = total_tasks  # one thread per task for max parallelism
     print(f"\n{'='*60}")
     print(f"Running {total_tasks} tasks with {max_workers} parallel workers")
     print(f"Scenarios: {', '.join(f'{s['profit']}%/{s['period']}d' for s in scenarios)}")
@@ -480,7 +491,7 @@ def run_backtest():
             period = scenario["period"]
             n = scenario["num_stocks"]
             scenario_key = f"{pct}%/{period}d"
-            for buy_date in feb_days:
+            for buy_date in test_days:
                 future = executor.submit(
                     _process_single_day,
                     scenario_key, pct, period, n,
@@ -513,11 +524,11 @@ def run_backtest():
     return results_df
 
 
-def generate_report(df: pd.DataFrame):
+def generate_report(df: pd.DataFrame, month_name="February"):
     """Generate markdown report from backtest results."""
 
     lines = [
-        "# February 2026 Backtest Report",
+        f"# {month_name} 2026 Backtest Report" if month_name else "# Backtest Report",
         "",
         f"**Generated:** {datetime.datetime.now().strftime('%Y-%m-%d %H:%M')}",
         "",
@@ -608,17 +619,30 @@ def generate_report(df: pd.DataFrame):
 
 
 if __name__ == "__main__":
-    results_df = run_backtest()
+    import argparse
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--month", type=int, default=2, help="Month number (2=Feb, 3=Mar)")
+    args = parser.parse_args()
+
+    month_names = {1: "January", 2: "February", 3: "March", 4: "April",
+                   5: "May", 6: "June", 7: "July", 8: "August",
+                   9: "September", 10: "October", 11: "November", 12: "December"}
+    month_name = month_names.get(args.month, f"Month-{args.month}")
+    month_lower = month_name[:3].lower()
+
+    results_df = run_backtest(month=args.month)
 
     # Save raw CSV
-    results_df.to_csv("backtest_feb_results.csv", index=False)
-    print(f"\nSaved {len(results_df)} results to backtest_feb_results.csv")
+    csv_path = f"backtest_{month_lower}_results.csv"
+    results_df.to_csv(csv_path, index=False)
+    print(f"\nSaved {len(results_df)} results to {csv_path}")
 
     # Generate markdown report
-    report = generate_report(results_df)
-    with open("backtest_feb_report.md", "w") as f:
+    report = generate_report(results_df, month_name=month_name)
+    report_path = f"backtest_{month_lower}_report.md"
+    with open(report_path, "w") as f:
         f.write(report)
-    print("Saved report to backtest_feb_report.md")
+    print(f"Saved report to {report_path}")
 
     # Print summary
     print("\n" + "=" * 60)

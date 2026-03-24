@@ -1,284 +1,77 @@
-# Trading Agent — Model Test Report
+# Trading Recommendations — Buy March 23, 2026
 
-**Report Date:** March 23, 2026  
-**Model Version:** `random_forest_v1_20260323`  
-**Training Framework:** scikit-learn 1.8.0 / XGBoost 3.2.0 / LightGBM 4.6.0  
-
----
-
-## 1. Executive Summary
-
-Three machine learning models (Random Forest, XGBoost, LightGBM) were trained and evaluated on hourly candlestick data across 419 stock and ETF symbols. The objective: predict which stocks will achieve a target profit of ≥3% within a 10-day trading horizon.
-
-**Winner: Random Forest** — selected for the highest AUC-ROC (0.745), best backtest ROI (2.02%), and strongest precision among the three candidates.
+**Data Cutoff:** March 20, 2026 19:30  
+**Model Version:** v7 Ensemble (XGBoost + LightGBM + Random Forest)  
+**Hold Period:** 4–9 trading days  
+**Filter:** All picks above 20-day SMA  
 
 ---
 
-## 2. Dataset Overview
+## 1. Target: 5% Profit — Low Volatility/Velocity
 
-### 2.1 Data Source
-
-| Property | Value |
-|---|---|
-| Total raw rows | 159,008 hourly candles |
-| Total symbols | 421 |
-| Clean training rows (after feature engineering & NaN removal) | 74,921 |
-| Symbols in training set | 419 |
-| Date range | January 2, 2026 – March 20, 2026 |
-| Candle interval | 1 hour |
-| Data format | Pipe-delimited `.txt` files |
-
-### 2.2 Data Categories
-
-| Category | Symbols | Description |
-|---|---|---|
-| S&P 500 | 305 | S&P 500 constituents |
-| S&P 100 | 96 | S&P 100 large-cap stocks |
-| Sector ETFs | 15 | XLK, XLF, XLE, XLV, XLY, XLP, XLI, XLU, XLRE, XLC, XAR, HACK, IGV, MAGS, VOO |
-| Merchandise | 5 | GLD, USO, IBIT, ETHA, SLVR |
-
-### 2.3 Target Distribution
-
-The classification target is binary: **BUY** (stock achieves ≥3% max return within 10 days) vs **HOLD**.
-
-| Class | Count | Percentage |
-|---|---|---|
-| HOLD (0) | 52,054 | 69.5% |
-| BUY (1) | 22,867 | 30.5% |
-
-The dataset is moderately imbalanced (~2.3:1 ratio), addressed via class weight balancing.
-
-### 2.4 Train/Test Split
-
-- **Method:** Time-based split per symbol (first 80% of each symbol's data for training, last 20% for testing)
-- **Why:** Preserves temporal ordering — prevents look-ahead bias that random splits would introduce
-- **Train set:** 59,853 rows
-- **Test set:** 15,068 rows
+| Rank | Symbol | Current Price | Score | Target Price | Stop-Loss | Expected Profit | YTD % | Last Month % | Volatility/Velocity |
+|------|--------|--------------|-------|-------------|-----------|----------------|-------|-------------|-------------------|
+| 1 | **AMAT** | $357.31 | 54 | $372.06 | $340.67 | 4.1% | +33.7% | -4.3% | Low (0.7%/2.9%) |
+| 2 | **USO** | $121.44 | 30 | $124.70 | $114.07 | 2.7% | +77.8% | +50.1% | Low (1.0%/2.4%) |
+| 3 | **JBHT** | $199.92 | 28 | $203.70 | $195.40 | 1.9% | +2.7% | -10.0% | Low (0.5%/2.7%) |
+| 4 | **FDX** | $359.34 | 25 | $365.23 | $344.97 | 1.6% | +24.4% | -6.4% | Low (0.7%/1.5%) |
+| 5 | **COP** | $126.90 | 24 | $128.54 | $125.01 | 1.3% | +33.8% | +15.5% | Low (0.4%/1.9%) |
+| 6 | **ODFL** | $183.92 | 28 | $187.56 | $178.76 | 2.0% | +16.6% | -5.2% | Low (0.5%/2.5%) |
+| 7 | **TPR** | $140.90 | 27 | $143.53 | $137.50 | 1.9% | +9.9% | -7.9% | Low (0.5%/2.3%) |
+| 8 | **DVN** | $48.76 | 27 | $49.68 | $47.36 | 1.9% | +30.9% | +11.6% | Low (0.6%/2.1%) |
+| 9 | **CTRA** | $33.97 | 25 | $34.66 | $33.03 | 2.0% | +29.8% | +10.5% | Low (0.6%/1.8%) |
+| 10 | **OXY** | $60.72 | 25 | $61.82 | $59.08 | 1.8% | +45.6% | +15.8% | Low (0.7%/2.1%) |
 
 ---
 
-## 3. Feature Engineering
+## 2. Target: 8% Profit — Low Volatility/Velocity
 
-### 3.1 Feature Summary
+| Rank | Symbol | Current Price | Score | Target Price | Stop-Loss | Expected Profit | YTD % | Last Month % | Volatility/Velocity |
+|------|--------|--------------|-------|-------------|-----------|----------------|-------|-------------|-------------------|
+| 1 | **AMAT** | $357.31 | 33 | $372.06 | $340.67 | 4.1% | +33.7% | -4.3% | Low (0.7%/2.9%) |
+| 2 | **JBHT** | $199.92 | 19 | $203.70 | $195.40 | 1.9% | +2.7% | -10.0% | Low (0.5%/2.7%) |
+| 3 | **ODFL** | $183.92 | 1 | $187.56 | $178.76 | 2.0% | +16.6% | -5.2% | Low (0.5%/2.5%) |
+| 4 | **OKE** | $89.27 | 1 | $90.60 | $86.37 | 1.5% | +21.8% | +2.1% | Low (0.9%/1.6%) |
+| 5 | **OXY** | $60.72 | 1 | $61.82 | $59.08 | 1.8% | +45.6% | +15.8% | Low (0.7%/2.1%) |
+| 6 | **NWS** | $27.39 | 1 | $27.56 | $26.80 | 0.6% | -7.2% | +6.0% | Low (0.6%/1.8%) |
+| 7 | **NWSA** | $24.06 | 1 | $24.19 | $23.58 | 0.5% | -7.2% | +4.6% | Low (0.5%/1.7%) |
+| 8 | **PVH** | $63.25 | 1 | $64.21 | $61.45 | 1.5% | -6.2% | -8.6% | Low (0.4%/2.5%) |
+| 9 | **PCTY** | $112.49 | 1 | $113.20 | $109.13 | 0.6% | -23.6% | +10.3% | Low (0.5%/2.3%) |
+| 10 | **PGR** | $206.13 | 1 | $207.43 | $201.61 | 0.6% | -3.0% | +1.2% | Low (0.5%/1.6%) |
 
-**45 total features** across 5 categories:
-
-| Category | Count | Features |
-|---|---|---|
-| Candlestick Patterns | 20 | Doji, Dragonfly Doji, Gravestone Doji, Hammer, Inverted Hammer, Hanging Man, Shooting Star, Marubozu, Bullish Engulfing, Bearish Engulfing, Piercing Line, Dark Cloud Cover, Tweezer Bottom, Tweezer Top, Morning Star, Evening Star, Three White Soldiers, Three Black Crows, Three Inside Up, Three Inside Down |
-| Moving Averages | 12 | SMA (7, 20, 50, 200), EMA (7, 20, 50), Crossovers (7/20, 20/50), MA Slope 20, Price vs SMA 20, Price vs SMA 50 |
-| Volume | 3 | Volume SMA 20, Volume Ratio, Volume Trend |
-| Price Action | 8 | Returns (1h, 7h, 20h), Volatility 20, ATR 14, RSI 14, High-Low Range, Body-to-Range |
-| Encoding | 2 | Direction (bullish=1/bearish=0), Category (snp500=0, snp100=1, etf=2, merchandise=3) |
-
-### 3.2 Target Variable Construction
-
-| Target | Calculation |
-|---|---|
-| `future_return` | `(max close in next 70 bars − current close) / current close × 100` |
-| `target_buy` | `1` if `future_return ≥ 3.0%`, else `0` |
-| `optimal_hold_days` | Bars to max close ÷ 7 bars/day |
-| `target_price` | Max close in the forward window |
-| `stop_loss` | `max(close − 2×ATR₁₄, min_low_in_window × 0.99)` |
+> **⚠️ Warning:** Only 2 stocks scored above the minimum quality threshold for 8% target with low volatility. Scores of 1 indicate the model has very low confidence these stocks will achieve 8% in 4–9 days at their current volatility level. Consider using Medium volatility stocks for this target, or reducing the target to 5%.
 
 ---
 
-## 4. Model Configurations
+## 3. Target: 10% Profit — Medium Volatility/Velocity
 
-### 4.1 XGBoost
+| Rank | Symbol | Current Price | Score | Target Price | Stop-Loss | Expected Profit | YTD % | Last Month % | Volatility/Velocity |
+|------|--------|--------------|-------|-------------|-----------|----------------|-------|-------------|-------------------|
+| 1 | **KLAC** | $1,499.63 | 30 | $1,567.95 | $1,419.19 | 4.6% | +18.8% | +0.8% | Medium (0.9%/3.0%) |
+| 2 | **AMD** | $201.47 | 22 | $208.13 | $193.79 | 3.3% | -9.2% | +2.5% | Medium (0.9%/4.2%) |
+| 3 | **ILMN** | $124.35 | 18 | $127.19 | $120.79 | 2.3% | -5.8% | +3.1% | Medium (0.5%/3.3%) |
+| 4 | **LRCX** | $228.39 | 1 | $242.38 | $213.95 | 6.1% | +25.7% | -5.8% | Medium (1.0%/3.3%) |
+| 5 | **XLE** | $59.34 | 1 | $59.84 | $58.48 | 0.8% | +32.1% | +7.6% | Medium (0.5%/4.5%) |
+| 6 | **RHI** | $23.33 | 1 | $23.72 | $22.30 | 1.7% | -12.6% | -2.1% | Medium (0.8%/3.2%) |
+| 7 | **APA** | $39.12 | 1 | $40.25 | $37.35 | 2.9% | +58.9% | +36.2% | Medium (0.9%/2.9%) |
+| 8 | **HUM** | $169.84 | 1 | $172.41 | $164.02 | 1.5% | -34.6% | -6.4% | Medium (0.6%/3.3%) |
+| 9 | **EPAM** | $137.50 | 1 | $139.54 | $132.55 | 1.5% | -31.4% | +5.7% | Medium (0.6%/3.0%) |
 
-| Parameter | Value |
-|---|---|
-| n_estimators | 500 |
-| max_depth | 7 |
-| learning_rate | 0.03 |
-| subsample | 0.8 |
-| colsample_bytree | 0.8 |
-| min_child_weight | 5 |
-| reg_alpha | 0.1 |
-| reg_lambda | 1.0 |
-| scale_pos_weight | 1.5 |
-
-### 4.2 LightGBM
-
-| Parameter | Value |
-|---|---|
-| n_estimators | 500 |
-| max_depth | 7 |
-| learning_rate | 0.03 |
-| subsample | 0.8 |
-| colsample_bytree | 0.8 |
-| min_child_weight | 5 |
-| reg_alpha | 0.1 |
-| reg_lambda | 1.0 |
-| scale_pos_weight | 1.5 |
-
-### 4.3 Random Forest
-
-| Parameter | Value |
-|---|---|
-| n_estimators | 500 |
-| max_depth | 15 |
-| min_samples_split | 10 |
-| min_samples_leaf | 5 |
-| max_features | sqrt |
-| class_weight | {0: 1, 1: 1.5} |
-
-All models used `StandardScaler` for feature normalization and a classification threshold of 0.5.
+> **⚠️ Warning:** Only 9 stocks qualified (above SMA-20 + Medium volatility). Only 3 scored meaningfully (KLAC 30, AMD 22, ILMN 18). Achieving 10% in 4–9 days is an aggressive target even for medium-volatility names.
 
 ---
 
-## 5. Test Results — Model Comparison
+## Notes
 
-### 5.1 Classification Metrics
+**Volatility/Velocity Classification:**
+- **Low:** Composite score < 1.8 (ATR% × 0.5 + Daily Vol% × 0.5)
+- **Medium:** Composite score 1.8–3.5
+- **High:** Composite score > 3.5
 
-| Metric | Random Forest | XGBoost | LightGBM |
-|---|---|---|---|
-| **AUC-ROC** | **0.7450** | 0.7313 | 0.7312 |
-| **Accuracy** | **0.7973** | 0.7279 | 0.7228 |
-| **Precision** | **0.1855** | 0.1603 | 0.1564 |
-| **Recall** | 0.4827 | **0.5993** | 0.5933 |
-| **F1 Score** | **0.2680** | 0.2529 | 0.2475 |
-| Precision @ Top 10 | **0.300** | 0.000 | 0.000 |
-| Precision @ Top 20 | **0.300** | 0.000 | 0.000 |
-| Training Time | 6.6s | 1.3s | 2.5s |
+The format shown is: `Label (ATR%/DailyVol%)`
 
-### 5.2 Backtest Results (Top 20 Picks)
-
-| Metric | Random Forest | XGBoost | LightGBM |
-|---|---|---|---|
-| **Avg Return** | **+2.02%** | +0.53% | +0.57% |
-| **Win Rate** | 60.0% | **65.0%** | **75.0%** |
-| Max Return | **+11.21%** | +1.69% | +1.69% |
-| Min Return | -1.90% | -1.90% | -1.90% |
-| **Sharpe Ratio** | 0.542 | 0.573 | **0.625** |
-
-### 5.3 Analysis
-
-- **Random Forest** has the best discriminative ability (AUC-ROC 0.745) and the highest backtest return (+2.02%) by a wide margin. It captures the best individual picks (max return +11.21%).
-- **XGBoost** and **LightGBM** perform nearly identically (AUC-ROC ~0.731), but sacrifice precision for recall. They predict BUY more aggressively, resulting in a higher false-positive rate.
-- **LightGBM** has the best win rate (75%) and Sharpe ratio (0.625) due to more conservative return predictions, but its average return is lower.
-- All models show low precision (~15–19%), which is expected given the 30.5% base rate — the models must identify the top ~30% of opportunities from a noisy financial signal.
-- The key differentiator is **precision at top-N**: Random Forest is the only model with non-zero precision among its 10 highest-confidence predictions, meaning its most confident calls are more likely to be correct.
-
----
-
-## 6. Feature Importance (Random Forest)
-
-The top 20 most important features that drive the model's predictions:
-
-| Rank | Feature | Importance | Category |
-|---|---|---|---|
-| 1 | `volatility_20` | 0.1110 | Price Action |
-| 2 | `volume_sma_20` | 0.0754 | Volume |
-| 3 | `sma_200` | 0.0671 | Moving Average |
-| 4 | `price_vs_sma_50` | 0.0663 | Moving Average |
-| 5 | `atr_14` | 0.0579 | Price Action |
-| 6 | `sma_50` | 0.0555 | Moving Average |
-| 7 | `ema_50` | 0.0546 | Moving Average |
-| 8 | `ema_20` | 0.0521 | Moving Average |
-| 9 | `ema_7` | 0.0516 | Moving Average |
-| 10 | `sma_20` | 0.0505 | Moving Average |
-| 11 | `sma_7` | 0.0483 | Moving Average |
-| 12 | `returns_20h` | 0.0439 | Price Action |
-| 13 | `price_vs_sma_20` | 0.0390 | Moving Average |
-| 14 | `ma_slope_20` | 0.0369 | Moving Average |
-| 15 | `volume_trend` | 0.0343 | Volume |
-| 16 | `high_low_range` | 0.0327 | Price Action |
-| 17 | `returns_7h` | 0.0305 | Price Action |
-| 18 | `rsi_14` | 0.0255 | Price Action |
-| 19 | `category_num` | 0.0202 | Encoding |
-| 20 | `volume_ratio` | 0.0143 | Volume |
-
-### Key Findings:
-
-- **Volatility and ATR are dominant signals** — the model relies heavily on price movement magnitude to predict future opportunities.
-- **Moving averages account for 8 of the top 14 features** — trend position (price vs. MA) and trend direction (MA slope) are core to the model's decision-making.
-- **Volume features are ranked 2nd and 15th** — confirming that volume confirms price movements.
-- **Candlestick patterns contribute minimally** — the individual patterns (hammer, engulfing, etc.) have low importance individually. The model relies more on quantitative trend and volatility signals.
-- **Category encoding matters** (rank 19) — different asset types (stocks, ETFs, commodities) have different behavior profiles.
-
----
-
-## 7. Live Prediction — Current Recommendations
-
-Generated on March 23, 2026 using the trained Random Forest model.  
-**Parameters:** Top 10 stocks, target profit 3%, period 10 days.
-
-| Rank | Symbol | Current Price | Score | Target Price | Stop-Loss | Expected Profit |
-|---|---|---|---|---|---|---|
-| 1 | **VST** | $146.23 | 66 | $150.62 | $139.51 | 3.0% |
-| 2 | **NRG** | $145.77 | 57 | $150.14 | $139.86 | 2.6% |
-| 3 | **ALB** | $156.65 | 55 | $161.35 | $150.55 | 2.5% |
-| 4 | **IBIT** | $39.79 | 55 | $40.98 | $38.93 | 2.5% |
-| 5 | **CF** | $124.90 | 53 | $128.65 | $118.97 | 2.4% |
-| 6 | **GLW** | $124.68 | 53 | $128.42 | $119.49 | 2.4% |
-| 7 | **UAL** | $89.96 | 51 | $92.66 | $86.83 | 2.3% |
-| 8 | **USO** | $121.44 | 51 | $125.08 | $116.53 | 2.3% |
-| 9 | **OXY** | $60.72 | 50 | $62.54 | $59.25 | 2.3% |
-| 10 | **CVX** | $201.78 | 49 | $207.83 | $198.47 | 2.2% |
-
-### Recommendation Analysis:
-
-- **Top pick VST (Vistra Corp)** has the highest confidence score (66/100) with a $4.39 upside target and $6.72 stop-loss buffer.
-- **Energy sector is dominant** — VST, NRG, CF, USO, OXY, CVX are energy/commodity-related, suggesting the model identifies energy as currently having the strongest momentum signals.
-- **IBIT (Bitcoin ETF)** appears at rank 4, indicating crypto ETF volatility is being captured as an opportunity signal.
-- **Score range is 49–66** — reflecting moderate confidence. No extreme high-conviction picks in the current market environment.
-- **Risk/Reward**: Average upside target is ~2.5%, average stop-loss is ~4% below current price. The risk/reward ratio averages about 1:1.6.
-
----
-
-## 8. Model Selection — Final Recommendation
-
-### Recommended Model: **Random Forest**
-
-| Criterion | Random Forest | Runner-Up |
-|---|---|---|
-| AUC-ROC | **0.745** (best) | LightGBM: 0.731 |
-| Backtest ROI | **+2.02%** (best) | LightGBM: +0.57% |
-| Precision at Top-10 | **30%** (only non-zero) | Others: 0% |
-| Accuracy | **79.7%** (best) | XGBoost: 72.8% |
-| F1 Score | **0.268** (best) | XGBoost: 0.253 |
-
-### Why Random Forest Wins:
-
-1. **Best discrimination** — AUC-ROC 0.745 means the model correctly ranks BUY vs. HOLD opportunities 74.5% of the time.
-2. **Highest precision on top picks** — The only model where its highest-confidence predictions have a meaningful success rate (30% at top-10).
-3. **Best backtest returns** — +2.02% average return on top-20 picks vs. <0.6% for the other two models.
-4. **Best overall accuracy** — 79.7% correct classifications.
-5. **Robust to overfitting** — Random Forest's ensemble of 500 trees with max_depth=15 and balanced class weights provides stable generalization.
-
-### Trade-offs Acknowledged:
-
-- **Training time is 3–5× slower** (6.6s vs 1.3–2.5s) — acceptable for this use case.
-- **Lower recall** (48% vs 59–60%) — the model misses some opportunities but is more selective.
-- **Precision is still low at 18.5%** — inherent difficulty of financial prediction; the model is best used as a ranking system (top-N picks) rather than a binary classifier.
-
----
-
-## 9. Improvement Opportunities
-
-| Area | Potential Improvement |
-|---|---|
-| **More data** | Extend to 6–12 months of history for better pattern learning |
-| **Hyperparameter tuning** | Use Optuna for Bayesian optimization per model |
-| **Feature selection** | Remove low-importance candlestick features that add noise |
-| **Ensemble** | Stack Random Forest + LightGBM for combined strengths |
-| **Market regime** | Add VIX/market-wide features to detect bull/bear regimes |
-| **Sector rotation** | Add sector momentum features (e.g., XLK vs. XLE relative strength) |
-| **Walk-forward validation** | Replace single split with expanding-window cross-validation |
-
----
-
-## 10. Artifacts
-
-| File | Description |
-|---|---|
-| `models/best_model.pkl` | Trained Random Forest model (126 MB) |
-| `models/scaler.pkl` | StandardScaler fitted on training data |
-| `models/feature_columns.json` | 45 feature column names in order |
-| `models/model_metadata.json` | Full training metadata and all results |
-
----
-
-*This report was generated automatically from model training results. Predictions are informational and not financial advice.*
+**Market Context (March 20, 2026):**
+- VOO closed at $598.04, trading **3.8% below its 20-day SMA** — deep bearish territory
+- The above-SMA-20 filter eliminates most of the universe in this environment
+- The March backtest showed 43.6% hit rate for 5%/10d and 35.5% for 10%/10d
+- Low-volatility stocks are unlikely to achieve 8%+ in 4–9 days by design — their low price swings work against aggressive targets
