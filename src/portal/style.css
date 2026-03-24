@@ -332,6 +332,27 @@ tbody tr:hover {
   font-size: 0.8rem;
 }
 
+.history-actions {
+  display: flex;
+  gap: 0.4rem;
+  align-items: center;
+}
+
+.history-card .delete-btn {
+  background: none;
+  border: 1px solid #3a3d4a;
+  color: #999;
+  padding: 0.3rem 0.5rem;
+  border-radius: 4px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: color 0.2s, border-color 0.2s;
+}
+.history-card .delete-btn:hover {
+  color: #ef5350;
+  border-color: #ef5350;
+}
+
 .hidden { display: none !important; }
 
 /* Info button */

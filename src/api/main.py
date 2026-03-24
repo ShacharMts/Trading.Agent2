@@ -304,6 +304,17 @@ def get_saved(filename: str):
         return json.load(f)
 
 
+@app.delete("/api/saved/{filename}")
+def delete_saved(filename: str):
+    """Delete a saved recommendation file."""
+    safe_name = Path(filename).name
+    filepath = RECOMMENDATIONS_DIR / safe_name
+    if not filepath.exists() or not filepath.suffix == ".json":
+        raise HTTPException(404, "File not found")
+    filepath.unlink()
+    return {"deleted": safe_name}
+
+
 # --- Static files & SPA ---
 
 @app.get("/")

@@ -334,7 +334,10 @@ async function loadHistory() {
           <span>${s.count} symbols</span>
           <span>${s.created ? new Date(s.created).toLocaleString() : ''}</span>
         </div>
-        <button class="view-btn">View</button>
+        <div class="history-actions">
+          <button class="view-btn">View</button>
+          <button class="delete-btn" data-filename="${s.filename}" title="Delete">&#x1f5d1;</button>
+        </div>
       </div>
     `
       )
@@ -345,6 +348,23 @@ async function loadHistory() {
 }
 
 $('#historyList').addEventListener('click', async (e) => {
+  // Handle delete button
+  if (e.target.classList.contains('delete-btn')) {
+    e.stopPropagation();
+    const filename = e.target.dataset.filename;
+    if (!confirm(`Delete ${filename}?`)) return;
+    try {
+      const res = await fetch(`/api/saved/${encodeURIComponent(filename)}`, { method: 'DELETE' });
+      if (!res.ok) throw new Error('Delete failed');
+      showStatus('success', `Deleted ${filename}`);
+      setTimeout(() => $('#status').classList.add('hidden'), 3000);
+      loadHistory();
+    } catch (err) {
+      showStatus('error', 'Delete failed: ' + err.message);
+    }
+    return;
+  }
+
   const card = e.target.closest('.history-card');
   if (!card) return;
   const filename = card.dataset.filename;
