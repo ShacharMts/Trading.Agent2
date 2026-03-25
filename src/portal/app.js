@@ -179,8 +179,8 @@ $('#chartBackBtn').addEventListener('click', () => {
       if (dx < 0) navigateSymbol(+1); // swipe left → next
       else         navigateSymbol(-1); // swipe right → prev
     } else if (ady >= 65 && ady > adx * 1.4) {
-      if (dy < 0) showMobileInfoPanel();  // swipe up → info
-      else        hideMobileInfoPanel();  // swipe down → chart
+      if (dy < 0) showMobileInfoPanel(); // swipe up → symbol info slides down
+      else        navigateSymbol(+1);    // swipe down → next symbol
     }
   }, { passive: true });
 })();
