@@ -93,9 +93,20 @@ function renderTable(recs) {
 
 // --- Chart ---
 $('#recTable').addEventListener('click', (e) => {
+  // Always handle View button click
   if (e.target.classList.contains('chart-link')) {
     const symbol = e.target.dataset.symbol;
     loadChart(symbol, currentPeriod);
+    return;
+  }
+  // On mobile portrait: single click anywhere on a data row opens fullscreen chart
+  if (isMobilePortrait()) {
+    const row = e.target.closest('tr');
+    if (!row || row.closest('thead')) return;
+    // Skip info button
+    if (e.target.classList.contains('info-btn') || e.target.closest('.info-btn')) return;
+    const btn = row.querySelector('.chart-link');
+    if (btn) loadChart(btn.dataset.symbol, currentPeriod);
   }
 });
 
@@ -113,8 +124,10 @@ function isMobilePortrait() {
 
 function openMobileChart() {
   if (!isMobilePortrait()) return;
+  hideMobileInfoPanel();
   document.body.classList.add('mobile-chart-open');
   history.pushState({ mobileChart: true }, '');
+  updateMobileNavCounter();
   // Resize chart to fit fullscreen
   setTimeout(() => {
     if (chart) {
@@ -127,6 +140,10 @@ function openMobileChart() {
 
 function closeMobileChart() {
   document.body.classList.remove('mobile-chart-open');
+  // Hide chart section so it doesn't show below the list on mobile
+  if (isMobilePortrait()) {
+    $('#chartSection').classList.add('hidden');
+  }
   // Resize chart back
   setTimeout(() => {
     if (chart) {
@@ -140,6 +157,94 @@ $('#chartBackBtn').addEventListener('click', () => {
   closeMobileChart();
   if (history.state && history.state.mobileChart) history.back();
 });
+
+// --- Mobile swipe gestures ---
+(function () {
+  let sx = 0, sy = 0;
+  const el = $('#chartSection');
+
+  el.addEventListener('touchstart', (e) => {
+    sx = e.touches[0].clientX;
+    sy = e.touches[0].clientY;
+  }, { passive: true });
+
+  el.addEventListener('touchend', (e) => {
+    if (!isMobilePortrait() || !document.body.classList.contains('mobile-chart-open')) return;
+    const dx = e.changedTouches[0].clientX - sx;
+    const dy = e.changedTouches[0].clientY - sy;
+    const adx = Math.abs(dx), ady = Math.abs(dy);
+
+    if (adx >= 55 && adx > ady * 1.4) {
+      // Horizontal: navigate symbols
+      if (dx < 0) navigateSymbol(+1); // swipe left → next
+      else         navigateSymbol(-1); // swipe right → prev
+    } else if (ady >= 65 && ady > adx * 1.4) {
+      if (dy < 0) showMobileInfoPanel();  // swipe up → info
+      else        hideMobileInfoPanel();  // swipe down → chart
+    }
+  }, { passive: true });
+})();
+
+// Prev / Next buttons
+$('#mobilePrevBtn').addEventListener('click', () => navigateSymbol(-1));
+$('#mobileNextBtn').addEventListener('click', () => navigateSymbol(+1));
+
+// Tap handle to dismiss info panel
+$('#mobileInfoPanel').addEventListener('click', (e) => {
+  if (e.target.classList.contains('mobile-info-handle')) hideMobileInfoPanel();
+});
+
+function navigateSymbol(dir) {
+  if (!currentRecs.length) return;
+  const idx = currentRecs.findIndex((r) => r.symbol === currentSymbol);
+  const next = idx + dir;
+  if (next < 0 || next >= currentRecs.length) return;
+  loadChart(currentRecs[next].symbol, currentPeriod);
+}
+
+function updateMobileNavCounter() {
+  const counter = $('#mobileNavCounter');
+  const prevBtn = $('#mobilePrevBtn');
+  const nextBtn = $('#mobileNextBtn');
+  if (!counter) return;
+  const idx = currentRecs.findIndex((r) => r.symbol === currentSymbol);
+  if (idx >= 0 && currentRecs.length > 0) {
+    counter.textContent = `${idx + 1} / ${currentRecs.length}`;
+    if (prevBtn) prevBtn.disabled = idx === 0;
+    if (nextBtn) nextBtn.disabled = idx === currentRecs.length - 1;
+  } else {
+    counter.textContent = '';
+    if (prevBtn) prevBtn.disabled = true;
+    if (nextBtn) nextBtn.disabled = true;
+  }
+}
+
+async function showMobileInfoPanel() {
+  const panel = $('#mobileInfoPanel');
+  const content = $('#mobileInfoContent');
+  if (!panel || !currentSymbol) return;
+  panel.classList.add('info-open');
+  // Only re-fetch if symbol changed
+  if (panel.dataset.loadedSymbol === currentSymbol) return;
+  panel.dataset.loadedSymbol = currentSymbol;
+  content.innerHTML = '<p class="muted" style="text-align:center;padding:2rem 0"><span class="spinner"></span> Loading info...</p>';
+  try {
+    const res = await fetch(`/api/info/${encodeURIComponent(currentSymbol)}`);
+    if (!res.ok) throw new Error('Not available');
+    const data = await res.json();
+    content.innerHTML = renderInfoContent(data);
+    if (data.profile && data.profile.name) {
+      // keep the handle at top
+    }
+  } catch {
+    content.innerHTML = `<p class="muted" style="text-align:center;padding:2rem 0">No info available for ${currentSymbol}</p>`;
+  }
+}
+
+function hideMobileInfoPanel() {
+  const panel = $('#mobileInfoPanel');
+  if (panel) panel.classList.remove('info-open');
+}
 
 window.addEventListener('popstate', (e) => {
   if (document.body.classList.contains('mobile-chart-open')) {
@@ -188,8 +293,9 @@ async function loadChart(symbol, period) {
     $('#chartSection').classList.remove('hidden');
     const dispName = name ? `${symbol} — ${name}` : symbol;
     $('#chartTitle').textContent = dispName;
-    // Open fullscreen chart on mobile
+    // Open fullscreen chart on mobile (also resets info panel + updates counter)
     openMobileChart();
+    updateMobileNavCounter();
     // Small delay to let the DOM layout update, then render
     requestAnimationFrame(() => {
       renderChart(data.symbol, name, data.candles, smaLabel);
