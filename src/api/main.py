@@ -3,6 +3,7 @@
 import json
 import os
 import glob
+from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
 
@@ -15,10 +16,18 @@ import requests as http_requests
 from src.api.recommend_engine import RecommendEngine
 from src.utils.config import PROJECT_ROOT
 
-app = FastAPI(title="Trading Recommendation Portal")
-
-# Singleton engine — loaded once on first request
+# Singleton engine
 engine = RecommendEngine()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Preload data at startup so the first request is fast."""
+    engine._get_raw_data()
+    yield
+
+
+app = FastAPI(title="Trading Recommendation Portal", lifespan=lifespan)
 
 RECOMMENDATIONS_DIR = PROJECT_ROOT / "models" / "Recumendations"
 RECOMMENDATIONS_DIR.mkdir(parents=True, exist_ok=True)
