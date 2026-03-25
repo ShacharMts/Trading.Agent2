@@ -1,0 +1,1 @@
+lsof -ti:8000 2>/dev/null | xargs kill -9 2>/dev/null; sleep 1; cd /Users/sm250451/Dev-ai/Trading.Agent2 && .venv/bin/python -m uvicorn src.api.main:app --port 8000
