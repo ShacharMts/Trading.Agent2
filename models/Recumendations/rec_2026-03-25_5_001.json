@@ -1,0 +1,83 @@
+{
+  "created": "2026-03-25T22:20:37.054371",
+  "filters": {
+    "num": "5",
+    "profit": "5",
+    "hold": "7",
+    "sma": "100",
+    "vol": "Medium",
+    "cutoff": "2026-03-25 19:30:00"
+  },
+  "recommendations": [
+    {
+      "symbol": "PLTR",
+      "name": "Palantir",
+      "current_price": 154.78,
+      "score": 73,
+      "target_price": 159.43,
+      "stop_loss": 148.08,
+      "expected_profit": 3,
+      "ytd_pct": -11.3,
+      "month_pct": 15.3,
+      "vol_label": "Medium",
+      "atr_pct": 0.89,
+      "daily_vol": 3.17
+    },
+    {
+      "symbol": "KLAC",
+      "name": "KLA Corp",
+      "current_price": 1566.35,
+      "score": 69,
+      "target_price": 1634.14,
+      "stop_loss": 1509.31,
+      "expected_profit": 4.3,
+      "ytd_pct": 24.1,
+      "month_pct": 1.2,
+      "vol_label": "Medium",
+      "atr_pct": 0.71,
+      "daily_vol": 2.98
+    },
+    {
+      "symbol": "AMD",
+      "name": "AMD",
+      "current_price": 205.38,
+      "score": 51,
+      "target_price": 214.4,
+      "stop_loss": 198.92,
+      "expected_profit": 4.4,
+      "ytd_pct": -7.5,
+      "month_pct": -2.6,
+      "vol_label": "Medium",
+      "atr_pct": 0.69,
+      "daily_vol": 4.12
+    },
+    {
+      "symbol": "TER",
+      "name": "Teradyne",
+      "current_price": 320.03,
+      "score": 66,
+      "target_price": 336.76,
+      "stop_loss": 303.36,
+      "expected_profit": 5.2,
+      "ytd_pct": 57.1,
+      "month_pct": -6.6,
+      "vol_label": "Medium",
+      "atr_pct": 0.91,
+      "daily_vol": 3.94
+    },
+    {
+      "symbol": "ALB",
+      "name": "ALB",
+      "current_price": 176.98,
+      "score": 63,
+      "target_price": 186.59,
+      "stop_loss": 170.75,
+      "expected_profit": 5.4,
+      "ytd_pct": 24.2,
+      "month_pct": -9.6,
+      "vol_label": "Medium",
+      "atr_pct": 0.6,
+      "daily_vol": 3.87
+    }
+  ]
+}

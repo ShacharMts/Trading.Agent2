@@ -4,13 +4,17 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Trading Recommendation Portal</title>
-  <link rel="stylesheet" href="/static/style.css?v=5">
+  <link rel="stylesheet" href="/static/style.css?v=6">
   <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
 </head>
 <body>
 
 <header>
-  <h1>Trading Recommendations</h1>
+  <div class="header-left">
+    <img src="/static/logo.png" alt="MTS Logo" class="header-logo">
+    <h1>MTS Trading Recommendations</h1>
+  </div>
+  <span class="version-badge">v1.2.3</span>
 </header>
 
 <main>
@@ -78,17 +82,22 @@
   <section id="chartSection" class="hidden">
     <div class="section-header">
       <div>
+        <button id="chartBackBtn" class="chart-back-btn">&larr; Back</button>
         <h2 id="chartTitle">Chart</h2>
         <div id="liveQuote" class="live-quote"></div>
       </div>
       <div class="chart-buttons">
         <div class="chart-type-toggle">
-          <button class="type-btn active" data-type="candle">Candlestick</button>
-          <button class="type-btn" data-type="line">Line</button>
+          <button class="type-btn active" data-type="candle" title="Candlestick">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><line x1="9" y1="2" x2="9" y2="22"/><rect x="5" y="7" width="8" height="10" rx="1" fill="currentColor" opacity="0.3" stroke="currentColor"/><line x1="17" y1="4" x2="17" y2="20"/><rect x="13" y="9" width="8" height="6" rx="1" fill="currentColor" opacity="0.3" stroke="currentColor"/></svg>
+          </button>
+          <button class="type-btn" data-type="line" title="Line">
+            <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="3,17 8,11 13,14 21,5"/></svg>
+          </button>
         </div>
         <div class="chart-period-btns">
-          <button class="period-btn active" data-period="1m">1M</button>
           <button class="period-btn" data-period="1w">1W</button>
+          <button class="period-btn active" data-period="1m">1M</button>
           <button class="period-btn" data-period="ytd">YTD</button>
         </div>
       </div>
@@ -96,10 +105,27 @@
     <div id="priceChart"></div>
   </section>
 
-  <!-- Saved Recommendations -->
+  <!-- Landscape split wrapper: sidebar (saved) + content (results/chart) -->
+  <div id="landscapeWrap">
+    <aside id="historySidebar">
+      <div class="history-header">
+        <h2>Saved Recommendations</h2>
+        <button class="sort-btn" id="sortBtnSidebar" title="Sort by name">&#x25B2;</button>
+      </div>
+      <div id="historyList"><p class="muted">No saved recommendations yet.</p></div>
+    </aside>
+    <div id="landscapeContent">
+      <!-- Results + chart will be shown here in landscape via CSS -->
+    </div>
+  </div>
+
+  <!-- Saved Recommendations (default / portrait) -->
   <section id="historySection">
-    <h2>Saved Recommendations</h2>
-    <div id="historyList"><p class="muted">No saved recommendations yet.</p></div>
+    <div class="history-header">
+      <h2>Saved Recommendations</h2>
+      <button class="sort-btn" id="sortBtnDefault" title="Sort by name">&#x25B2;</button>
+    </div>
+    <div id="historyListDefault"><p class="muted">No saved recommendations yet.</p></div>
   </section>
 </main>
 
@@ -116,6 +142,6 @@
   </div>
 </div>
 
-<script src="/static/app.js?v=5"></script>
+<script src="/static/app.js?v=6"></script>
 </body>
 </html>

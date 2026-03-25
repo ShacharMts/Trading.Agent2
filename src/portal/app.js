@@ -106,6 +106,47 @@ $('#recTable').addEventListener('dblclick', (e) => {
   if (btn) loadChart(btn.dataset.symbol, currentPeriod);
 });
 
+// --- Mobile fullscreen chart ---
+function isMobilePortrait() {
+  return window.innerWidth <= 768;
+}
+
+function openMobileChart() {
+  if (!isMobilePortrait()) return;
+  document.body.classList.add('mobile-chart-open');
+  history.pushState({ mobileChart: true }, '');
+  // Resize chart to fit fullscreen
+  setTimeout(() => {
+    if (chart) {
+      const container = $('#priceChart');
+      chart.applyOptions({ width: container.clientWidth, height: container.clientHeight });
+      chart.timeScale().fitContent();
+    }
+  }, 50);
+}
+
+function closeMobileChart() {
+  document.body.classList.remove('mobile-chart-open');
+  // Resize chart back
+  setTimeout(() => {
+    if (chart) {
+      const container = $('#priceChart');
+      chart.applyOptions({ width: container.clientWidth, height: 450 });
+    }
+  }, 50);
+}
+
+$('#chartBackBtn').addEventListener('click', () => {
+  closeMobileChart();
+  if (history.state && history.state.mobileChart) history.back();
+});
+
+window.addEventListener('popstate', (e) => {
+  if (document.body.classList.contains('mobile-chart-open')) {
+    closeMobileChart();
+  }
+});
+
 $$('.period-btn').forEach((btn) => {
   btn.addEventListener('click', () => {
     $$('.period-btn').forEach((b) => b.classList.remove('active'));
@@ -143,10 +184,16 @@ async function loadChart(symbol, period) {
     if (data.name) SYMBOL_NAMES[symbol] = data.name;
     const smaLabel = `SMA-${smaVal}`;
     lastChartData = { symbol: data.symbol, name, candles: data.candles, smaLabel };
-    renderChart(data.symbol, name, data.candles, smaLabel);
+    // Make chart section visible BEFORE rendering so container has dimensions
     $('#chartSection').classList.remove('hidden');
     const dispName = name ? `${symbol} — ${name}` : symbol;
     $('#chartTitle').textContent = dispName;
+    // Open fullscreen chart on mobile
+    openMobileChart();
+    // Small delay to let the DOM layout update, then render
+    requestAnimationFrame(() => {
+      renderChart(data.symbol, name, data.candles, smaLabel);
+    });
     // Fetch live quote
     fetchLiveQuote(symbol);
     startQuoteRefresh(symbol);
@@ -314,40 +361,70 @@ $('#saveBtn').addEventListener('click', async () => {
 });
 
 // --- History ---
+let historySortAsc = true;
+let historySavedData = [];
+
 async function loadHistory() {
   try {
     const res = await fetch('/api/saved');
     const data = await res.json();
-    const list = $('#historyList');
-
-    if (!data.saved.length) {
-      list.innerHTML = '<p class="muted">No saved recommendations yet.</p>';
-      return;
-    }
-
-    list.innerHTML = data.saved
-      .map(
-        (s) => `
-      <div class="history-card" data-filename="${s.filename}">
-        <div class="info">
-          <strong>${s.filename}</strong>
-          <span>${s.count} symbols</span>
-          <span>${s.created ? new Date(s.created).toLocaleString() : ''}</span>
-        </div>
-        <div class="history-actions">
-          <button class="view-btn">View</button>
-          <button class="delete-btn" data-filename="${s.filename}" title="Delete">&#x1f5d1;</button>
-        </div>
-      </div>
-    `
-      )
-      .join('');
+    historySavedData = data.saved || [];
+    renderHistory();
   } catch (err) {
     console.error('Error loading history:', err);
   }
 }
 
-$('#historyList').addEventListener('click', async (e) => {
+function renderHistory() {
+  const list = $('#historyList');
+  const sorted = [...historySavedData].sort((a, b) => {
+    const cmp = a.filename.localeCompare(b.filename);
+    return historySortAsc ? cmp : -cmp;
+  });
+
+  if (!sorted.length) {
+    const emptyMsg = '<p class="muted">No saved recommendations yet.</p>';
+    list.innerHTML = emptyMsg;
+    syncHistoryLists();
+    return;
+  }
+
+  list.innerHTML = sorted
+    .map(
+      (s) => `
+    <div class="history-card" data-filename="${s.filename}">
+      <div class="info">
+        <strong>${s.filename}</strong>
+        <span>${s.count} symbols</span>
+        <span>${s.created ? new Date(s.created).toLocaleString() : ''}</span>
+      </div>
+      <div class="history-actions">
+        <button class="view-btn">View</button>
+        <button class="delete-btn" data-filename="${s.filename}" title="Delete">&#x1f5d1;</button>
+      </div>
+    </div>
+  `
+    )
+    .join('');
+  syncHistoryLists();
+  updateSortButtons();
+}
+
+function toggleHistorySort() {
+  historySortAsc = !historySortAsc;
+  renderHistory();
+}
+
+function updateSortButtons() {
+  const arrow = historySortAsc ? '\u25B2' : '\u25BC';
+  const title = historySortAsc ? 'Sort Z→A' : 'Sort A→Z';
+  $$('.sort-btn').forEach(btn => { btn.innerHTML = arrow; btn.title = title; });
+}
+
+$('#sortBtnSidebar').addEventListener('click', toggleHistorySort);
+$('#sortBtnDefault').addEventListener('click', toggleHistorySort);
+
+async function handleHistoryClick(e) {
   // Handle delete button
   if (e.target.classList.contains('delete-btn')) {
     e.stopPropagation();
@@ -377,6 +454,10 @@ $('#historyList').addEventListener('click', async (e) => {
     currentFilters = data.filters || {};
     renderTable(currentRecs);
     $('#results').classList.remove('hidden');
+    removeLandscapePlaceholder();
+
+    // Highlight active card in sidebar
+    setActiveHistoryCard(filename);
 
     // Show saved file banner with filters
     const f = currentFilters;
@@ -397,10 +478,109 @@ $('#historyList').addEventListener('click', async (e) => {
   } catch (err) {
     showStatus('error', 'Error loading: ' + err.message);
   }
+}
+
+$('#historyList').addEventListener('click', handleHistoryClick);
+$('#historyListDefault').addEventListener('click', handleHistoryClick);
+
+// --- Landscape split panel ---
+let _landscapeBusy = false;
+
+function isLandscape() {
+  return window.innerWidth > 768 && window.matchMedia('(orientation: landscape)').matches;
+}
+
+function enableLandscapeMode() {
+  if (_landscapeBusy) return;
+  _landscapeBusy = true;
+
+  try {
+    const lc = $('#landscapeContent');
+    const main = document.querySelector('main');
+    const wrap = $('#landscapeWrap');
+
+    if (!isLandscape()) {
+      if (!document.body.classList.contains('landscape-mode')) { _landscapeBusy = false; return; }
+      document.body.classList.remove('landscape-mode');
+      // Move sections back to main in correct order
+      const filters = lc.querySelector('#filters');
+      const status = lc.querySelector('#status');
+      const results = lc.querySelector('#results');
+      const chartSection = lc.querySelector('#chartSection');
+      if (filters) main.insertBefore(filters, wrap);
+      if (status) main.insertBefore(status, wrap);
+      if (results) main.insertBefore(results, wrap);
+      if (chartSection) main.insertBefore(chartSection, wrap);
+      _landscapeBusy = false;
+      return;
+    }
+
+    document.body.classList.add('landscape-mode');
+
+    // Move filters, status, results + chart into landscape content panel (in order)
+    const filters = $('#filters');
+    const status = $('#status');
+    const results = $('#results');
+    const chartSection = $('#chartSection');
+
+    // Clear placeholder first
+    removeLandscapePlaceholder();
+
+    // Insert in correct order: filters first
+    if (filters && filters.parentElement !== lc) lc.prepend(filters);
+    if (status && status.parentElement !== lc) {
+      const after = lc.querySelector('#filters');
+      if (after) after.after(status); else lc.prepend(status);
+    }
+    if (results && results.parentElement !== lc) lc.appendChild(results);
+    if (chartSection && chartSection.parentElement !== lc) lc.appendChild(chartSection);
+
+    // Show placeholder if nothing loaded yet
+    if (results.classList.contains('hidden') && !lc.querySelector('.landscape-placeholder')) {
+      const ph = document.createElement('div');
+      ph.className = 'landscape-placeholder';
+      ph.textContent = 'Select a saved recommendation or generate new ones';
+      lc.appendChild(ph);
+    }
+  } finally {
+    _landscapeBusy = false;
+  }
+}
+
+function removeLandscapePlaceholder() {
+  const ph = document.querySelector('.landscape-placeholder');
+  if (ph) ph.remove();
+}
+
+// Sync sidebar history list with default history list
+function syncHistoryLists() {
+  const defaultList = $('#historyListDefault');
+  const sidebarList = $('#historyList');
+  if (defaultList && sidebarList) {
+    defaultList.innerHTML = sidebarList.innerHTML;
+  }
+}
+
+let _resizeTimer = null;
+window.addEventListener('resize', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(enableLandscapeMode, 80);
 });
+window.matchMedia('(orientation: landscape)').addEventListener('change', () => {
+  clearTimeout(_resizeTimer);
+  _resizeTimer = setTimeout(enableLandscapeMode, 80);
+});
+
+// Mark active card in sidebar
+function setActiveHistoryCard(filename) {
+  $$('#historySidebar .history-card').forEach(c => c.classList.remove('active'));
+  const card = document.querySelector(`#historySidebar .history-card[data-filename="${filename}"]`);
+  if (card) card.classList.add('active');
+}
 
 // --- Init ---
 loadHistory();
+setTimeout(enableLandscapeMode, 100);
 
 // --- Symbol Info Modal ---
 $('#recTable').addEventListener('click', (e) => {
