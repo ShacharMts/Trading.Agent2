@@ -48,17 +48,21 @@ def recommend(
     cutoff: str = Query(None),
 ):
     """Generate recommendations with filters."""
+    import traceback
     sma_filter = sma if sma > 0 else None
     vol_filter = vol if vol and vol != "None" else None
 
-    recs = engine.recommend(
-        num_stocks=num,
-        expected_profit_pct=profit,
-        period_days=hold,
-        sma_filter=sma_filter,
-        vol_filter=vol_filter,
-        cutoff=cutoff,
-    )
+    try:
+        recs = engine.recommend(
+            num_stocks=num,
+            expected_profit_pct=profit,
+            period_days=hold,
+            sma_filter=sma_filter,
+            vol_filter=vol_filter,
+            cutoff=cutoff,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=traceback.format_exc())
     return {"recommendations": recs, "count": len(recs)}
 
 
@@ -86,6 +90,47 @@ def available_dates():
         engine.load()
     dates = engine.get_available_dates()
     return {"dates": dates}
+
+
+@app.get("/api/debug")
+def debug_info():
+    """Diagnostic endpoint — shows file presence, sizes, and any load error."""
+    import traceback
+    from src.utils.config import BEST_MODEL_PATH, SCALER_PATH, FEATURE_COLUMNS_PATH, DATA_DIR
+
+    def file_info(p):
+        from pathlib import Path
+        p = Path(p)
+        if p.exists():
+            size_mb = round(p.stat().st_size / 1024 / 1024, 2)
+            return {"exists": True, "size_mb": size_mb}
+        return {"exists": False}
+
+    # List data dirs
+    data_counts = {}
+    from pathlib import Path
+    for cat, d in {"snp500": DATA_DIR / "snp500_hourly", "snp100": DATA_DIR / "snp100_hourly",
+                   "etfs": DATA_DIR / "etfs_hourly", "merchandise": DATA_DIR / "merchandise_hourly"}.items():
+        d = Path(d)
+        data_counts[cat] = len(list(d.glob("*.txt"))) if d.exists() else "DIR_MISSING"
+
+    load_error = None
+    if not engine.is_loaded:
+        try:
+            engine.load()
+        except Exception as e:
+            load_error = traceback.format_exc()
+
+    return {
+        "model_loaded": engine.is_loaded,
+        "load_error": load_error,
+        "files": {
+            "best_model.pkl": file_info(BEST_MODEL_PATH),
+            "scaler.pkl": file_info(SCALER_PATH),
+            "feature_columns.json": file_info(FEATURE_COLUMNS_PATH),
+        },
+        "data_files": data_counts,
+    }
 
 
 @app.get("/api/quote/{symbol}")

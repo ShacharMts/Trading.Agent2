@@ -8,7 +8,6 @@ __pycache__/
 scripts/
 backtest_*.csv
 backtest_*.json
-*.pkl
 .vscode/
 Spec/
 spec.md
